@@ -170,10 +170,24 @@ st.caption(
     "cases. Synthetic data only. No connection to live Singtel systems."
 )
 
+shared_key = st.secrets.get("OPENAI_API_KEY", None)
+
 with st.sidebar:
     st.header("Settings")
-    api_key = st.text_input("OpenAI API key", type="password",
-                             help="Your own key. Not stored anywhere.")
+    if shared_key:
+        st.success("Using the evaluator API key provided by the developer.")
+        override_key = st.text_input(
+            "Use a different OpenAI API key (optional)",
+            type="password",
+            help="Leave blank to use the shared evaluator key. "
+                 "Your own key is never stored.",
+        )
+        api_key = override_key.strip() or shared_key
+    else:
+        api_key = st.text_input(
+            "OpenAI API key", type="password",
+            help="Your own key. Not stored anywhere.",
+        )
     st.markdown("---")
     st.caption(
         "This prototype demonstrates: (1) a real OpenAI API call for case "
