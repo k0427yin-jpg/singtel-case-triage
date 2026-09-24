@@ -3,8 +3,10 @@ Singtel AI Complex Case Intelligence and Escalation System — prototype
 Streamlit + OpenAI API version.
 
 Pipeline:
-1. Synthetic case input (this app, form or free text)
-2. AI classification + summary (OpenAI API call — genuine AI functionality)
+1. Synthetic case input (this app, form or free text — structured fields,
+   previous interaction history, and the current customer message)
+2. AI classification + summary (OpenAI API call — genuine AI functionality;
+   the summary draws on both the interaction history and current message)
 2b. Deterministic missing-information check (plain Python — not the LLM;
     moved here after testing showed prompt-only detection was inconsistent)
 3. Deterministic rule-based scoring (plain Python — not the LLM)
@@ -17,6 +19,7 @@ No live Singtel systems are contacted. All data is synthetic.
 
 import json
 import random
+import re
 import string
 from datetime import datetime, timezone, timedelta
 
@@ -35,9 +38,11 @@ SYSTEM_PROMPT = """You are an AI case-assessment assistant for a prototype calle
 "Singtel AI Complex Case Intelligence and Escalation System". You provide decision
 support for a human service officer handling SIMULATED Singtel home-broadband cases.
 
-Use only the information given in the case. Do not invent facts, customer history,
-or Singtel system data. Do not make the final decision — a human service officer
-retains final authority.
+Use only the information given in the case: the structured fields, the
+previous interaction history (if provided), and the current customer
+message. Do not invent facts, prior contacts, or Singtel system data beyond
+what is explicitly given. Do not make the final decision — a human service
+officer retains final authority.
 
 Classify the case and return STRICT JSON with exactly these keys:
 {
@@ -45,7 +50,9 @@ Classify the case and return STRICT JSON with exactly these keys:
   "complexity": "Low" | "Medium" | "High",
   "urgency": "Low" | "Medium" | "High",
   "sentiment": "Positive" | "Neutral" | "Frustrated",
-  "summary": "<concise grounded summary, based only on the case text>"
+  "summary": "<concise grounded summary of the case, drawing on the previous
+    interaction history and the current customer message together, based
+    only on the information given>"
 }
 
 Complexity classification rules:
@@ -134,6 +141,8 @@ def check_missing_information(case_text: str) -> str:
     status_terms = [
         "not working", "fully down", "disconnected",
         "disconnecting", "intermittent", "slow",
+        "working", "working normally", "resolved",
+        "back to normal", "restored", "fixed",
     ]
 
     if not any(term in text for term in duration_terms):
@@ -146,6 +155,73 @@ def check_missing_information(case_text: str) -> str:
         missing.append("current status")
 
     return ", ".join(missing) if missing else "None"
+
+
+# ---------------------------------------------------------------------------
+# Step 1b: Input quality gate — plain Python. Blocks the AI call rather than
+# generating an assessment from insufficient information.
+# ---------------------------------------------------------------------------
+
+def has_meaningful_content(text: str, min_len: int = 10) -> bool:
+    return bool(text) and len(text.strip()) >= min_len
+
+
+# ---------------------------------------------------------------------------
+# Step 2c: Deterministic contradiction check — plain Python, NOT the LLM.
+# Looks for a contact count mentioned in the free text that does not match
+# the structured "Previous support contacts" field, so the officer can
+# verify which is correct before acting on the assessment.
+# ---------------------------------------------------------------------------
+
+_SUFFIXED_NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+_STANDALONE_NUMBER_WORDS = {"once": 1, "twice": 2}
+
+# Counts must refer explicitly to support contact, never arbitrary actions
+# such as restarting a router twice or checking cables two times.
+_CONTACT_NUMBER = r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)"
+_CONTACT_COUNT = rf"(?:once|twice|{_CONTACT_NUMBER}\s+times)"
+_CONTACT_CONTEXT_PATTERN = re.compile(
+    rf"\b(?:contacted|called|spoke\s+to|reached)\s+"
+    rf"(?:(?:the\s+)?(?:support|customer\s+service|helpdesk|hotline|"
+    rf"Singtel|you)(?:\s+team)?\s+)?"
+    rf"(?:already\s+)?({_CONTACT_COUNT})\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_CONTACT_PATTERN = re.compile(
+    rf"\b({_CONTACT_NUMBER})\s+(?:(?:previous|prior|support)\s+)*contacts\b",
+    re.IGNORECASE,
+)
+
+
+def extract_mentioned_contact_counts(text: str) -> list:
+    text = text.lower()
+    mentions = _CONTACT_CONTEXT_PATTERN.findall(text)
+    mentions += _EXPLICIT_CONTACT_PATTERN.findall(text)
+    counts = []
+    for mention in mentions:
+        word = mention.split()[0]
+        if word in _STANDALONE_NUMBER_WORDS:
+            counts.append(_STANDALONE_NUMBER_WORDS[word])
+        elif word.isdigit():
+            counts.append(int(word))
+        else:
+            counts.append(_SUFFIXED_NUMBER_WORDS[word])
+    return counts
+
+
+def detect_contact_count_discrepancy(prior_contacts: int, case_text: str, history_text: str):
+    combined = f"{case_text}\n{history_text}"
+    for mentioned in extract_mentioned_contact_counts(combined):
+        if mentioned != prior_contacts:
+            return (
+                f"The customer message or interaction history mentions "
+                f"{mentioned} prior contact(s), but the 'Previous support "
+                f"contacts' field is set to {prior_contacts}."
+            )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -176,11 +252,14 @@ def calculate_priority(prior_contacts: int, unresolved: bool, work_impact: bool,
     score += pts
     breakdown.append(("Frustrated sentiment", pts))
 
-    escalate = (
-        complexity.lower() == "high"
-        or urgency.lower() == "high"
-        or score > 70
-    )
+    triggers = []
+    if urgency.lower() == "high":
+        triggers.append("High urgency")
+    if complexity.lower() == "high":
+        triggers.append("High complexity")
+    if score > 70:
+        triggers.append("Priority score > 70")
+    escalate = bool(triggers)
 
     breakdown_str = " + ".join(f"{label} {val}" for label, val in breakdown) + f" = {score}"
 
@@ -188,6 +267,7 @@ def calculate_priority(prior_contacts: int, unresolved: bool, work_impact: bool,
         "score": score,
         "breakdown": breakdown_str,
         "escalation_recommended": escalate,
+        "trigger": "; ".join(triggers) if triggers else "None",
     }
 
 
@@ -197,11 +277,25 @@ def calculate_priority(prior_contacts: int, unresolved: bool, work_impact: bool,
 # ---------------------------------------------------------------------------
 
 def create_simulated_record(case_id: str, priority_score: int, assigned_queue: str,
-                             officer_decision: str, approved_action: str) -> dict:
+                             officer_decision: str, approved_action: str,
+                             original_queue: str = "", original_action: str = "",
+                             override_reason: str = "") -> dict:
     valid_decisions = {"accept", "modify", "escalate"}
     if officer_decision.lower() not in valid_decisions:
         return {
             "status": "BLOCKED - no valid officer decision (Accept, Modify or Escalate)",
+            "ticket_id": "",
+            "timestamp": "",
+        }
+
+    override_required = (
+        officer_decision.lower() == "modify"
+        or (officer_decision.lower() == "escalate"
+            and (assigned_queue != original_queue or approved_action != original_action))
+    )
+    if override_required and not override_reason.strip():
+        return {
+            "status": "BLOCKED - an override reason is required",
             "ticket_id": "",
             "timestamp": "",
         }
@@ -212,6 +306,14 @@ def create_simulated_record(case_id: str, priority_score: int, assigned_queue: s
 
     return {
         "status": "Created for simulation",
+        "case_id": case_id,
+        "priority_score": priority_score,
+        "assigned_queue": assigned_queue,
+        "human_decision": officer_decision,
+        "approved_action": approved_action,
+        "original_queue": original_queue,
+        "original_action": original_action,
+        "override_reason": override_reason.strip(),
         "ticket_id": ticket_id,
         "timestamp": timestamp,
     }
@@ -339,14 +441,40 @@ if "record" not in st.session_state:
     st.session_state.record = None
 if "assessment_run" not in st.session_state:
     st.session_state.assessment_run = 0
+if "assessed_inputs" not in st.session_state:
+    st.session_state.assessed_inputs = None
+if "discrepancy" not in st.session_state:
+    st.session_state.discrepancy = None
 
 st.subheader("1. Case input")
 
-with st.form("case_form"):
+# Plain (non-form) widgets, deliberately not wrapped in st.form: the app
+# needs to detect, on every rerun, whether these inputs still match the
+# values used for the last completed assessment (see the staleness check
+# below), which a batched st.form would hide until the next submit.
+with st.container(border=True):
+    st.markdown("**Service:** Home Broadband")
     case_id = st.text_input("Case ID", value="REG-01")
     prior_contacts = st.number_input("Previous support contacts", min_value=0, value=4)
     unresolved = st.checkbox("Issue still unresolved", value=True)
     work_impact = st.checkbox("Affects customer's work / critical activity", value=True)
+    history_text = st.text_area(
+        "Previous interaction history",
+        value=(
+            "Contact 1 (5 days ago): Customer reported intermittent disconnections. "
+            "Advised to restart the router.\n"
+            "Contact 2 (3 days ago): Issue persisted after restart. A line test "
+            "was scheduled.\n"
+            "Contact 3 (1 day ago): Customer called again; problem still unresolved.\n"
+            "Contact 4 (today): Customer followed up because disconnections "
+            "continued to interrupt work calls; no resolution was recorded."
+        ),
+        height=110,
+        help="Prior contact notes for this case, most recent last. The AI reads "
+             "this alongside the current message for the summary. The 'Previous "
+             "support contacts' count above is what drives the priority score — "
+             "keep it consistent with the number of entries here.",
+    )
     case_text = st.text_area(
         "Customer message",
         value=(
@@ -358,21 +486,45 @@ with st.form("case_form"):
         ),
         height=140,
     )
-    submitted = st.form_submit_button("Run AI assessment", type="primary")
+    submitted = st.button("Run AI assessment", type="primary")
+
+current_inputs = {
+    "case_id": case_id,
+    "prior_contacts": prior_contacts,
+    "unresolved": unresolved,
+    "work_impact": work_impact,
+    "history_text": history_text,
+    "case_text": case_text,
+}
 
 if submitted:
     if not api_key:
         st.error("Enter your OpenAI API key in the sidebar first.")
+    elif not has_meaningful_content(case_text) and not has_meaningful_content(history_text):
+        st.error(
+            "Not enough information to assess this case. Enter a customer "
+            "message or previous interaction history with enough detail "
+            "before running the assessment."
+        )
     else:
         with st.spinner("Calling AI model for classification and summary..."):
             try:
-                ai_case_input = f"""Previous support contacts: {prior_contacts}
+                ai_case_input = f"""Service: Home Broadband
+Previous support contacts: {prior_contacts}
 Issue still unresolved: {"Yes" if unresolved else "No"}
 Affects work / critical activity: {"Yes" if work_impact else "No"}
+
+Previous interaction history:
+{history_text.strip() if history_text.strip() else "None recorded."}
 
 Customer message:
 {case_text}"""
                 ai_result = classify_case(ai_case_input, api_key)
+                # Deliberately message-only: the deterministic completeness
+                # check reads the current customer message, not the history
+                # field, so it reflects what the customer themselves has
+                # stated in this contact. Extending it to also scan history
+                # is a possible future refinement, not done here.
                 ai_result["missing_info"] = check_missing_information(case_text)
                 st.session_state.result = ai_result
                 st.session_state.case_id = case_id
@@ -386,12 +538,28 @@ Customer message:
                 st.session_state.priority = priority
                 st.session_state.record = None
                 st.session_state.assessment_run += 1
+                # Snapshot the exact inputs this assessment was based on, and
+                # check for a contact-count contradiction, at assessment time.
+                st.session_state.assessed_inputs = dict(current_inputs)
+                st.session_state.discrepancy = detect_contact_count_discrepancy(
+                    prior_contacts, case_text, history_text,
+                )
             except Exception as e:
                 st.error(f"AI call failed: {e}")
 
 if st.session_state.result:
     r = st.session_state.result
     p = st.session_state.priority
+
+    # Stale-assessment protection: compare the inputs currently shown on the
+    # page against the snapshot taken when this assessment last ran.
+    stale = current_inputs != st.session_state.assessed_inputs
+    if stale:
+        st.warning("Inputs changed after assessment. Run AI assessment again.")
+
+    discrepancy = st.session_state.discrepancy
+    if discrepancy and not stale:
+        st.error(f"Discrepancy detected — officer verification required. {discrepancy}")
 
     with st.container(border=True):
         st.subheader("2. AI classification and summary (from OpenAI API)")
@@ -413,6 +581,7 @@ if st.session_state.result:
         st.write(f"**Priority score:** {p['score']} / 100")
         st.write(f"**Breakdown:** {p['breakdown']}")
         st.write(f"**Escalation recommended:** {'Yes' if p['escalation_recommended'] else 'No'}")
+        st.write(f"**Escalation trigger:** {p['trigger']}")
         st.caption(
             "This score is calculated by a fixed Python function using the classified "
             "factors above. It is not generated by the language model."
@@ -437,12 +606,25 @@ if st.session_state.result:
         queue = st.text_input("Assigned queue", value=default_queue, key=f"queue_input_{run_id}")
         action_note = st.text_area("Approved action / notes", value=default_action, key=f"action_input_{run_id}")
 
+        override_reason = st.text_area(
+            "Override reason (required for Modify or a changed escalation recommendation)",
+            key=f"override_reason_{run_id}",
+        )
+
+        blocked = stale or bool(discrepancy)
+        if blocked:
+            st.caption(
+                "Accept, Modify and Escalate are disabled until this is "
+                "resolved: rerun the assessment if inputs changed, or "
+                "correct the discrepancy above."
+            )
+
         dcol1, dcol2, dcol3, dcol4 = st.columns(4)
         decision = None
         validation_error = None
 
         # ACCEPT — only valid when the recommendation has not been changed
-        if dcol1.button("Accept", type="primary"):
+        if dcol1.button("Accept", type="primary", disabled=blocked):
             if queue.strip() != default_queue or action_note.strip() != default_action:
                 validation_error = (
                     "Accept can only be used when the system recommendation is "
@@ -452,13 +634,15 @@ if st.session_state.result:
                 decision = "Accept"
 
         # MODIFY — requires an actual change
-        if dcol2.button("Modify"):
+        if dcol2.button("Modify", disabled=blocked):
             if queue.strip() == default_queue and action_note.strip() == default_action:
                 validation_error = (
                     "Modify requires an actual change to the assigned queue or the "
                     "approved action/notes. Edit one of these fields before selecting "
                     "Modify, or choose Accept if the suggested routing is correct."
                 )
+            elif not override_reason.strip():
+                validation_error = "Enter an override reason before selecting Modify."
             else:
                 decision = "Modify"
 
@@ -466,7 +650,7 @@ if st.session_state.result:
         # note is rebuilt from scratch rather than appended to the non-escalation
         # default, so it never contains a contradictory "no escalation required"
         # phrase alongside "escalated".
-        if dcol3.button("Escalate"):
+        if dcol3.button("Escalate", disabled=blocked):
             queue = "Specialist broadband escalation queue"
             if not p["escalation_recommended"]:
                 custom_note = action_note.strip()
@@ -478,11 +662,11 @@ if st.session_state.result:
                 )
                 if custom_note:
                     action_note += f" Officer note: {custom_note}"
+            changed = queue != default_queue or action_note.strip() != default_action
+            if changed and not override_reason.strip():
+                validation_error = "Enter an override reason before changing the escalation recommendation."
             else:
-                if action_note.strip() == default_action:
-                    action_note = default_action
-                action_note = "Escalation confirmed by officer. " + action_note.strip()
-            decision = "Escalate"
+                decision = "Escalate"
 
         # NO DECISION — business action must remain blocked
         if dcol4.button("No decision (test block)"):
@@ -493,7 +677,9 @@ if st.session_state.result:
 
         if decision:
             record = create_simulated_record(
-                st.session_state.case_id, p["score"], queue, decision, action_note,
+                st.session_state.case_id, p["score"], queue.strip(), decision, action_note.strip(),
+                original_queue=default_queue, original_action=default_action,
+                override_reason=override_reason,
             )
             st.session_state.record = {**record, "decision": decision, "queue": queue, "action": action_note}
 
@@ -506,12 +692,15 @@ if st.session_state.result:
             else:
                 st.success("SIMULATED TICKET — DEMONSTRATION ONLY")
                 st.json({
-                    "case_id": st.session_state.case_id,
+                    "case_id": rec["case_id"],
                     "ticket_id": rec["ticket_id"],
-                    "priority_score": p["score"],
-                    "assigned_queue": rec["queue"],
-                    "human_decision": rec["decision"],
-                    "approved_action": rec["action"],
+                    "priority_score": rec["priority_score"],
+                    "assigned_queue": rec["assigned_queue"],
+                    "human_decision": rec["human_decision"],
+                    "approved_action": rec["approved_action"],
+                    "original_queue": rec["original_queue"],
+                    "original_action": rec["original_action"],
+                    "override_reason": rec["override_reason"],
                     "timestamp_sgt": rec["timestamp"],
                     "status": rec["status"],
                 })
