@@ -53,8 +53,13 @@ against this list and name any item it does not clearly state:
 - whether it affects all services or only some (scope)
 - what troubleshooting, if any, the customer has already tried
 - the current status of the service (fully down vs intermittent vs slow)
-A short or vague message that does not cover these should list them as missing,
-not "None". Only write "None" if the case text actually addresses all of them.
+Do not infer these details from the seriousness of the case or from the
+structured fields (previous contacts, unresolved status, work impact). Check
+each required item separately against the customer message text alone. If
+even one required item is not explicitly stated in the customer message, list
+it as missing. A short or vague message that does not cover these should list
+them as missing, not "None". Only write "None" if the customer message text
+actually addresses all of them explicitly.
 
 Complexity classification rules:
 - High: at least two previous support contacts AND the problem remains unresolved,
@@ -71,12 +76,24 @@ Urgency classification rules:
 Wanting a fast fix does not by itself mean High urgency.
 
 Sentiment classification rules:
-- Frustrated: customer explicitly expresses frustration, anger, or strong,
-  clearly negative language.
-- Neutral: customer describes a problem/inconvenience without clear negative
+- Determine sentiment ONLY from the emotional wording in the customer message.
+- Do NOT infer sentiment from previous contacts, unresolved status, work impact,
+  urgency, complexity, service severity, or repeated support history.
+- Frustrated: only when the customer explicitly expresses frustration, anger,
+  annoyance, disappointment, or similarly clear negative emotion.
+- Neutral: the customer describes a problem, inconvenience, repeated contacts,
+  unresolved service, work impact, or asks for help WITHOUT explicit negative
   emotional language.
-- Positive: customer expresses satisfaction or a clearly positive attitude.
-Inconvenience, wanting speed, or an unresolved issue alone do not mean Frustrated.
+- Positive: the customer explicitly expresses satisfaction or positive emotion.
+
+Examples:
+- "I am extremely frustrated because this keeps happening." -> Frustrated
+- "I contacted support twice and the issue is still unresolved. Please investigate." -> Neutral
+- "I cannot join work calls. Please help when possible." -> Neutral
+
+IMPORTANT: A serious or urgent case is NOT automatically a frustrated customer.
+If there is no explicit emotional evidence in the customer message, classify
+sentiment as Neutral.
 
 Return ONLY the JSON object, no other text.
 """
@@ -178,22 +195,35 @@ st.markdown(
     <style>
     .block-container { padding-top: 1.5rem; }
     .singtel-header {
-        background: #EE133B;
+        background: #1E191A;
+        border-left: 6px solid #EE133B;
         color: #FFFFFF;
-        padding: 1.4rem 1.6rem;
-        border-radius: 10px;
-        margin-bottom: 1.4rem;
+        padding: 1.5rem 1.8rem;
+        border-radius: 8px;
+        margin-bottom: 1.6rem;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.15);
     }
     .singtel-header h1 {
         color: #FFFFFF;
-        font-size: 1.6rem;
+        font-size: 1.55rem;
         font-weight: 700;
-        margin: 0 0 0.3rem 0;
+        letter-spacing: -0.01em;
+        margin: 0 0 0.4rem 0;
     }
     .singtel-header p {
-        color: #FFE9EC;
+        color: #C9C5C4;
         font-size: 0.92rem;
+        line-height: 1.5;
         margin: 0;
+    }
+    div.stButton > button[kind="primary"] {
+        background-color: #C4102C;
+        border: none;
+        font-weight: 600;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+    div.stButton > button[kind="primary"]:hover {
+        background-color: #A50E26;
     }
     div.stButton > button {
         border-radius: 6px;
@@ -240,6 +270,8 @@ if "priority" not in st.session_state:
     st.session_state.priority = None
 if "record" not in st.session_state:
     st.session_state.record = None
+if "assessment_run" not in st.session_state:
+    st.session_state.assessment_run = 0
 
 st.subheader("1. Case input")
 
@@ -285,8 +317,7 @@ Customer message:
                 )
                 st.session_state.priority = priority
                 st.session_state.record = None
-                st.session_state.pop("queue_input", None)
-                st.session_state.pop("action_input", None)
+                st.session_state.assessment_run += 1
             except Exception as e:
                 st.error(f"AI call failed: {e}")
 
@@ -326,14 +357,25 @@ if st.session_state.result:
         f"{'Yes' if p['escalation_recommended'] else 'No'}). The officer can accept, "
         f"change, or override this suggestion."
     )
-    queue = st.text_input("Assigned queue", value=default_queue, key="queue_input")
-    action_note = st.text_area("Approved action / notes", value=default_action, key="action_input")
+    run_id = st.session_state.assessment_run
+    queue = st.text_input("Assigned queue", value=default_queue, key=f"queue_input_{run_id}")
+    action_note = st.text_area("Approved action / notes", value=default_action, key=f"action_input_{run_id}")
 
     dcol1, dcol2, dcol3, dcol4 = st.columns(4)
     decision = None
     validation_error = None
+
+    # ACCEPT — only valid when the recommendation has not been changed
     if dcol1.button("Accept", type="primary"):
-        decision = "Accept"
+        if queue.strip() != default_queue or action_note.strip() != default_action:
+            validation_error = (
+                "Accept can only be used when the system recommendation is "
+                "unchanged. Use Modify if you changed the queue or action/notes."
+            )
+        else:
+            decision = "Accept"
+
+    # MODIFY — requires an actual change
     if dcol2.button("Modify"):
         if queue.strip() == default_queue and action_note.strip() == default_action:
             validation_error = (
@@ -343,21 +385,30 @@ if st.session_state.result:
             )
         else:
             decision = "Modify"
+
+    # ESCALATE — always places the case on the escalation path. The action
+    # note is rebuilt from scratch rather than appended to the non-escalation
+    # default, so it never contains a contradictory "no escalation required"
+    # phrase alongside "escalated".
     if dcol3.button("Escalate"):
-        # Escalate always places the case on the escalation path, regardless
-        # of what the officer had left in the queue field, and regardless of
-        # whether the rule result already recommended escalation.
         queue = "Specialist broadband escalation queue"
         if not p["escalation_recommended"]:
+            custom_note = action_note.strip()
+            if custom_note == default_action:
+                custom_note = ""
             action_note = (
-                "Escalated by officer despite rules not recommending escalation. "
-                + action_note.strip()
-            ).strip()
+                "Route for escalation and further investigation. Officer "
+                "override: the deterministic rules did not recommend escalation."
+            )
+            if custom_note:
+                action_note += f" Officer note: {custom_note}"
         else:
-            action_note = (
-                "Escalation confirmed by officer. " + action_note.strip()
-            ).strip()
+            if action_note.strip() == default_action:
+                action_note = default_action
+            action_note = "Escalation confirmed by officer. " + action_note.strip()
         decision = "Escalate"
+
+    # NO DECISION — business action must remain blocked
     if dcol4.button("No decision (test block)"):
         decision = "None"
 
