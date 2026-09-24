@@ -5,6 +5,8 @@ Streamlit + OpenAI API version.
 Pipeline:
 1. Synthetic case input (this app, form or free text)
 2. AI classification + summary (OpenAI API call — genuine AI functionality)
+2b. Deterministic missing-information check (plain Python — not the LLM;
+    moved here after testing showed prompt-only detection was inconsistent)
 3. Deterministic rule-based scoring (plain Python — not the LLM)
 4. Human decision gate (Accept / Modify / Escalate)
 5. Simulated case record (generated only after a decision, by this app,
@@ -43,35 +45,8 @@ Classify the case and return STRICT JSON with exactly these keys:
   "complexity": "Low" | "Medium" | "High",
   "urgency": "Low" | "Medium" | "High",
   "sentiment": "Positive" | "Neutral" | "Frustrated",
-  "missing_info": "<short text, or 'None'>",
   "summary": "<concise grounded summary, based only on the case text>"
 }
-
-Missing-information check: before writing "missing_info", check the case text
-against this list and name any item it does not clearly state:
-- how long the problem has been happening (duration)
-- whether it affects all services or only some (scope)
-- what troubleshooting, if any, the customer has already tried
-- the current status of the service (fully down vs intermittent vs slow)
-Do not infer these details from the seriousness of the case or from the
-structured fields (previous contacts, unresolved status, work impact). Check
-each required item separately against the customer message text alone. If
-even one required item is not explicitly stated in the customer message, list
-it as missing. A short or vague message that does not cover these should list
-them as missing, not "None". Only write "None" if the customer message text
-actually addresses all of them explicitly.
-
-Interpret the checklist strictly:
-- "ongoing", "keeps happening", or "again" does NOT satisfy duration.
-  Duration requires an explicit time reference such as "for three days",
-  "since this morning", or "for 20 minutes".
-- Contacting customer support does NOT count as troubleshooting.
-  Troubleshooting requires an explicit action such as restarting the router,
-  checking cables, resetting equipment, or another technical step.
-- Mentioning one affected activity or one device does NOT establish scope.
-  Scope requires explicit information about whether all devices/services or
-  only some are affected.
-- "Since this morning" DOES satisfy duration.
 
 Complexity classification rules:
 - High: at least two previous support contacts AND the problem remains unresolved,
@@ -127,6 +102,50 @@ def classify_case(case_text: str, api_key: str) -> dict:
         response_format={"type": "json_object"},
     )
     return json.loads(response.choices[0].message.content)
+
+
+# ---------------------------------------------------------------------------
+# Step 2b: Deterministic missing-information check — plain Python, NOT the
+# LLM. Initial testing showed prompt-only missing-information detection was
+# inconsistent (see Section 4.4): the same completeness rules were applied
+# unevenly across cases. This keyword-based check is transparent and repeats
+# identically on the same input, matching the design principle already used
+# for priority scoring: the LLM handles semantic interpretation (intent,
+# complexity, urgency, sentiment, summary), Python handles auditable rules.
+# ---------------------------------------------------------------------------
+
+def check_missing_information(case_text: str) -> str:
+    text = case_text.lower()
+    missing = []
+
+    duration_terms = [
+        "minute", "minutes", "hour", "hours", "day", "days",
+        "week", "weeks", "since this morning", "since yesterday",
+        "for a while",
+    ]
+    scope_terms = [
+        "all devices", "all services", "only my", "only one",
+        "laptop only", "phone only", "some devices",
+    ]
+    troubleshooting_terms = [
+        "restart", "restarted", "reset", "checked the cables",
+        "check the cables", "reboot", "troubleshoot",
+    ]
+    status_terms = [
+        "not working", "fully down", "disconnected",
+        "disconnecting", "intermittent", "slow",
+    ]
+
+    if not any(term in text for term in duration_terms):
+        missing.append("duration")
+    if not any(term in text for term in scope_terms):
+        missing.append("scope")
+    if not any(term in text for term in troubleshooting_terms):
+        missing.append("troubleshooting")
+    if not any(term in text for term in status_terms):
+        missing.append("current status")
+
+    return ", ".join(missing) if missing else "None"
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +337,7 @@ Affects work / critical activity: {"Yes" if work_impact else "No"}
 Customer message:
 {case_text}"""
                 ai_result = classify_case(ai_case_input, api_key)
+                ai_result["missing_info"] = check_missing_information(case_text)
                 st.session_state.result = ai_result
                 st.session_state.case_id = case_id
                 st.session_state.prior_contacts = prior_contacts
@@ -344,6 +364,11 @@ if st.session_state.result:
     col3.metric("Sentiment", r["sentiment"])
     st.write(f"**Intent:** {r['intent']}")
     st.write(f"**Missing or ambiguous information:** {r['missing_info']}")
+    st.caption(
+        "This is a deterministic keyword check on the customer message, not "
+        "a language-model judgement, so the same message always gets the "
+        "same result."
+    )
     st.write(f"**Case summary:** {r['summary']}")
 
     st.subheader("3. Deterministic rule result (plain Python, not the AI model)")
