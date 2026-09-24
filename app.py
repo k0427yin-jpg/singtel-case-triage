@@ -61,6 +61,18 @@ it as missing. A short or vague message that does not cover these should list
 them as missing, not "None". Only write "None" if the customer message text
 actually addresses all of them explicitly.
 
+Interpret the checklist strictly:
+- "ongoing", "keeps happening", or "again" does NOT satisfy duration.
+  Duration requires an explicit time reference such as "for three days",
+  "since this morning", or "for 20 minutes".
+- Contacting customer support does NOT count as troubleshooting.
+  Troubleshooting requires an explicit action such as restarting the router,
+  checking cables, resetting equipment, or another technical step.
+- Mentioning one affected activity or one device does NOT establish scope.
+  Scope requires explicit information about whether all devices/services or
+  only some are affected.
+- "Since this morning" DOES satisfy duration.
+
 Complexity classification rules:
 - High: at least two previous support contacts AND the problem remains unresolved,
   OR the case clearly involves substantial specialist complexity.
