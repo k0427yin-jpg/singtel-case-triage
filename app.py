@@ -30,10 +30,10 @@ from openai import OpenAI
 # Configuration
 # ---------------------------------------------------------------------------
 
-st.set_page_config(page_title="Singtel Case Triage (Prototype)", page_icon="\U0001F4E1")
+st.set_page_config(page_title="Singtel Case Triage (Prototype)", page_icon="\U0001F4E1", layout="wide")
 
 SGT = timezone(timedelta(hours=8))
-APP_VERSION = "2026-09-25-processing-evidence-v3"
+APP_VERSION = "2026-09-25-workspace-v4"
 MODEL_NAME = "gpt-4o-mini"
 MAX_RULE_POINTS = 87
 
@@ -443,94 +443,46 @@ Customer message:
 # UI
 # ---------------------------------------------------------------------------
 
-st.markdown(
-    """
-    <style>
-    .stApp {
-        background-color: #F5F3F1;
-    }
-    .block-container { padding-top: 1.5rem; max-width: 900px; }
-
-    .singtel-header {
-        background: #1E191A;
-        border-left: 6px solid #EE133B;
-        color: #FFFFFF;
-        padding: 1.5rem 1.8rem;
-        border-radius: 8px;
-        margin-bottom: 1.6rem;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.15);
-    }
-    .singtel-header h1 {
-        color: #FFFFFF;
-        font-size: 1.55rem;
-        font-weight: 700;
-        letter-spacing: -0.01em;
-        margin: 0 0 0.4rem 0;
-    }
-    .singtel-header p {
-        color: #C9C5C4;
-        font-size: 0.92rem;
-        line-height: 1.5;
-        margin: 0;
-    }
-
-    /* Section headings (1. Case input, 2. AI classification, ...) */
-    h3 {
-        border-left: 4px solid #C4102C;
-        padding-left: 0.65rem;
-        color: #1E191A !important;
-        margin-top: 1.6rem !important;
-    }
-
-    /* Card containers: the input form and every st.container(border=True) */
-    [data-testid="stForm"],
-    [data-testid="stVerticalBlockBorderWrapper"] {
-        background-color: #FFFFFF;
-        border-radius: 12px;
-        border: 1px solid #E7E3DF;
-        box-shadow: 0 1px 6px rgba(0,0,0,0.05);
-        padding: 0.4rem 0.2rem;
-    }
-    [data-testid="stForm"] { padding: 1.4rem 1.4rem 1rem 1.4rem; }
-
-    /* Buttons */
-    div.stButton > button {
-        border-radius: 6px;
-        padding: 0.5rem 1.1rem;
-        transition: all 0.15s ease;
-    }
-    div.stButton > button[kind="primary"] {
-        background-color: #C4102C;
-        border: none;
-        font-weight: 600;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.2);
-    }
-    div.stButton > button[kind="primary"]:hover {
-        background-color: #A50E26;
-    }
-    div.stButton > button[kind="secondary"] {
-        background-color: #FFFFFF;
-        border: 1px solid #D8D4CF;
-        color: #1E191A;
-    }
-    div.stButton > button[kind="secondary"]:hover {
-        border-color: #C4102C;
-        color: #C4102C;
-    }
-    </style>
-    <div class="singtel-header">
-        <h1>Singtel Case Triage — prototype</h1>
-        <p>Decision-support prototype for complex, repeated, unresolved home-broadband
-        cases. Synthetic data only. No connection to live Singtel systems.</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown("""
+<style>
+.stApp { background:#F4F6F9; color:#192333; }
+.block-container { max-width:1180px; padding-top:2rem; padding-bottom:3rem; }
+[data-testid="stSidebar"] { background:#FFF; border-right:1px solid #E3E7EE; }
+h1,h2,h3 { color:#192333 !important; letter-spacing:-.025em; }
+h3 { font-size:1.2rem !important; }
+.hero { background:#172333; border-radius:20px; padding:30px 34px; margin-bottom:24px; border-top:5px solid #E31842; }
+.hero .eyebrow { font-size:12px; letter-spacing:.15em; font-weight:700; color:#FEB6C5; }
+.hero h1 { color:#FFF !important; font-size:32px; margin:10px 0; }
+.hero p { color:#D4DEEB; font-size:15px; max-width:760px; margin:0; }
+.pills { display:flex; flex-wrap:wrap; gap:8px; margin-top:20px; }
+.pills span { border:1px solid #596576; border-radius:30px; color:#F3F6FA; padding:5px 12px; font-size:12px; }
+[data-testid="stVerticalBlockBorderWrapper"], [data-testid="stVerticalBlockBorderWrapper"] > div { border-radius:14px; }
+[data-testid="stVerticalBlockBorderWrapper"] { background:white; }
+[data-testid="stMetric"] { background:#F1F4F8; padding:16px 20px; border-radius:12px; }
+[data-testid="stMetricValue"] { font-size:1.8rem; }
+.stButton > button { border-radius:9px; min-height:44px; font-weight:600; }
+.stButton > button[kind="primary"] { background:#C4102C; border-color:#C4102C; color:white; }
+[data-baseweb="tab-list"] { gap:24px; margin-bottom:20px; }
+[data-baseweb="tab"] { font-size:16px; padding:14px 4px; }
+[data-baseweb="tab-highlight"] { background:#C4102C; }
+.step-label { color:#B4102A; font-weight:700; font-size:12px; letter-spacing:.12em; margin-top:12px; }
+.section-copy { color:#566477; margin:0 0 20px; font-size:15px; }
+.empty-panel { border:1px dashed #BAC5D3; background:#FFF; border-radius:16px; padding:35px; margin:20px 0; }
+.empty-panel h3 { margin-top:0; }
+@media(max-width:700px) { .hero {padding:24px 20px;} .hero h1 {font-size:26px;} .block-container {padding-top:1rem;} }
+</style>
+<div class="hero">
+<div class="eyebrow">SINGTEL · SERVICE OPERATIONS PROTOTYPE</div>
+<h1>Case intelligence &amp; escalation</h1>
+<p>Understand the case history, review the recommendation and approve the next action.</p>
+<div class="pills"><span>Home broadband</span><span>Human approval required</span><span>Synthetic data only</span><span>No live Singtel connection</span></div>
+</div>
+""", unsafe_allow_html=True)
 
 shared_key = st.secrets.get("OPENAI_API_KEY", None)
 
 with st.sidebar:
-    st.header("Settings")
+    st.header("Workspace settings")
     st.caption(f"Prototype version: {APP_VERSION}")
     if shared_key:
         st.success("Using the evaluator API key provided by the developer.")
@@ -567,263 +519,317 @@ if "assessed_inputs" not in st.session_state:
 if "discrepancy" not in st.session_state:
     st.session_state.discrepancy = None
 
-st.subheader("1. Case input")
+front_tab, audit_tab = st.tabs(["Officer workspace · Frontend", "Processing & audit · Backend view"])
+with front_tab:
+    st.markdown('<div class="step-label">01 / INPUT</div>', unsafe_allow_html=True)
+    st.subheader("Build the case context")
+    st.caption("Keep contact counts, history and current service status consistent before assessment.")
 
-# Plain (non-form) widgets, deliberately not wrapped in st.form: the app
-# needs to detect, on every rerun, whether these inputs still match the
-# values used for the last completed assessment (see the staleness check
-# below), which a batched st.form would hide until the next submit.
-with st.container(border=True):
-    st.markdown("**Service:** Home Broadband")
-    case_id = st.text_input("Case ID", value="REG-01")
-    prior_contacts = st.number_input("Previous support contacts", min_value=0, value=4)
-    unresolved = st.checkbox("Issue still unresolved", value=True)
-    work_impact = st.checkbox("Affects customer's work / critical activity", value=True)
-    history_text = st.text_area(
-        "Previous interaction history",
-        value=(
-            "Contact 1 (5 days ago): Customer reported intermittent disconnections. "
-            "Advised to restart the router.\n"
-            "Contact 2 (3 days ago): Issue persisted after restart. A line test "
-            "was scheduled.\n"
-            "Contact 3 (1 day ago): Customer called again; problem still unresolved.\n"
-            "Contact 4 (today): Customer followed up because disconnections "
-            "continued to interrupt work calls; no resolution was recorded."
-        ),
-        height=110,
-        help="Prior contact notes for this case, most recent last. The AI reads "
-             "this alongside the current message for the summary. The 'Previous "
-             "support contacts' count above is what drives the priority score — "
-             "keep it consistent with the number of entries here.",
-    )
-    case_text = st.text_area(
-        "Customer message",
-        value=(
-            "My home broadband keeps disconnecting and this problem has still not "
-            "been fixed. I have contacted support four times already. I work from "
-            "home and the connection drops are preventing me from joining client "
-            "video calls. I am extremely frustrated because I have had to explain "
-            "the same problem repeatedly."
-        ),
-        height=140,
-    )
-    submitted = st.button("Run AI assessment", type="primary")
-
-current_inputs = {
-    "case_id": case_id,
-    "prior_contacts": prior_contacts,
-    "unresolved": unresolved,
-    "work_impact": work_impact,
-    "history_text": history_text,
-    "case_text": case_text,
-}
-
-# Clear outputs immediately when any assessed input changes, not only on submit.
-invalidate_changed_inputs(st.session_state, current_inputs)
-
-if submitted:
-    with st.spinner("Checking inputs and preparing the assessment..."):
-        assessment_error = run_assessment(st.session_state, current_inputs, api_key)
-    if assessment_error:
-        st.error(assessment_error)
-elif st.session_state.get("assessment_invalidated", False):
-    st.warning("No current assessment. Previous results and simulated ticket were cleared. Run AI assessment again.")
-
-if st.session_state.result:
-    r = st.session_state.result
-    p = st.session_state.priority
-
-    # Stale-assessment protection: compare the inputs currently shown on the
-    # page against the snapshot taken when this assessment last ran.
-    stale = current_inputs != st.session_state.assessed_inputs
-    if stale:
-        st.warning("Inputs changed after assessment. Run AI assessment again.")
-
-    discrepancy = st.session_state.discrepancy
-    if discrepancy and not stale:
-        st.error(f"Discrepancy detected — officer verification required. {discrepancy}")
-
-    details = st.session_state.get("processing_details")
-    if details:
-        with st.expander("AI processing details — backend evidence", expanded=False):
-            st.caption(
-                "Recorded from this successful assessment. The backend sends the "
-                "case context to OpenAI; Python calculates the score separately. "
-                "API credentials are not included."
-            )
-            st.json({key: details[key] for key in (
-                "assessment_id", "prototype_version", "case_id", "requested_model",
-                "returned_model", "response_id", "started_at_sgt", "completed_at_sgt",
-                "elapsed_seconds",
-            )})
-            st.markdown("**Case context sent to the API (user message)**")
-            st.code(details["case_context"], language="text")
-            st.markdown("**Classification and summary returned by the API**")
-            st.json(details["model_output"])
-            if st.checkbox("Show system prompt and raw response", key=f"raw_evidence_{st.session_state.assessment_run}"):
-                st.code(details["system_prompt"], language="text")
-                st.code(details["raw_response"] or "Raw response unavailable.", language="json")
-
+    # Plain (non-form) widgets, deliberately not wrapped in st.form: the app
+    # needs to detect, on every rerun, whether these inputs still match the
+    # values used for the last completed assessment (see the staleness check
+    # below), which a batched st.form would hide until the next submit.
     with st.container(border=True):
-        st.subheader("2. AI classification and summary (from OpenAI API)")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Complexity", r["complexity"])
-        col2.metric("Urgency", r["urgency"])
-        col3.metric("Sentiment", r["sentiment"])
-        st.write(f"**Intent:** {r['intent']}")
-        with st.expander("Fault-detail keywords absent from the current message (reference only)"):
-            st.write(r["missing_info"])
-            st.caption(
-                "This message-only keyword checklist does not inspect interaction "
-                "history or structured fields. Absent keywords do not establish a "
-                "case-level information gap. Review all case information before "
-                "requesting details. Fault duration and troubleshooting may not "
-                "apply to routine requests such as changing a Wi-Fi password. "
-                "This checklist is not a safety or approval check."
-            )
-        st.write(f"**Case summary:** {r['summary']}")
-
-    with st.container(border=True):
-        st.subheader("3. Deterministic rule result (plain Python, not the AI model)")
-        st.write(f"**Priority score:** {p['score']} rule points")
-        st.caption(f"Current rules have a maximum of {MAX_RULE_POINTS} points. This is not a percentage.")
-        st.write(f"**Breakdown:** {p['breakdown']}")
-        st.write(f"**Escalation recommended:** {'Yes' if p['escalation_recommended'] else 'No'}")
-        st.write(f"**Escalation trigger:** {p['trigger']}")
-        st.caption(
-            "Priority score: fixed Python rules use previous contacts, unresolved "
-            "status, work impact and AI-classified sentiment. Escalation: separate "
-            "Python rules recommend escalation when AI-classified urgency is High, "
-            "AI-classified complexity is High, or the priority score is greater "
-            "than 70. Urgency and complexity do not add points to the score."
+        st.markdown("**Service:** Home Broadband")
+        identity_col, contacts_col = st.columns(2)
+        case_id = identity_col.text_input("Case ID", value="REG-01")
+        prior_contacts = contacts_col.number_input("Previous support contacts", min_value=0, value=4)
+        status_col, impact_col = st.columns(2)
+        unresolved = status_col.checkbox("Issue still unresolved", value=True)
+        work_impact = impact_col.checkbox("Affects customer's work / critical activity", value=True)
+        history_text = st.text_area(
+            "Previous interaction history",
+            value=(
+                "Contact 1 (5 days ago): Customer reported intermittent disconnections. "
+                "Advised to restart the router.\n"
+                "Contact 2 (3 days ago): Issue persisted after restart. A line test "
+                "was scheduled.\n"
+                "Contact 3 (1 day ago): Customer called again; problem still unresolved.\n"
+                "Contact 4 (today): Customer followed up because disconnections "
+                "continued to interrupt work calls; no resolution was recorded."
+            ),
+            height=190,
+            help="Prior contact notes for this case, most recent last. The AI reads "
+                 "this alongside the current message for the summary. The 'Previous "
+                 "support contacts' count above is what drives the priority score — "
+                 "keep it consistent with the number of entries here.",
         )
-
-    if p["escalation_recommended"]:
-        default_queue = "Specialist broadband escalation queue"
-        default_action = "Route for escalation and further investigation."
-    else:
-        default_queue = "Standard broadband support queue"
-        default_action = "Provide standard troubleshooting guidance; no escalation required based on current information."
-
-    with st.container(border=True):
-        st.subheader("4. Human decision")
-        st.write("A human service officer retains final authority.")
-        st.caption(
-            f"Suggested based on the rule result (Escalation recommended: "
-            f"{'Yes' if p['escalation_recommended'] else 'No'}). The officer can accept, "
-            f"change, or override this suggestion."
+        case_text = st.text_area(
+            "Customer message",
+            value=(
+                "My home broadband keeps disconnecting and this problem has still not "
+                "been fixed. I have contacted support four times already. I work from "
+                "home and the connection drops are preventing me from joining client "
+                "video calls. I am extremely frustrated because I have had to explain "
+                "the same problem repeatedly."
+            ),
+            height=170,
         )
-        run_id = st.session_state.assessment_run
-        queue = st.text_input("Assigned queue", value=default_queue, key=f"queue_input_{run_id}")
-        action_note = st.text_area("Approved action / notes", value=default_action, key=f"action_input_{run_id}")
+        submitted = st.button("Run AI assessment", type="primary")
 
-        override_reason = st.text_area(
-            "Override reason (required for Modify or a changed escalation recommendation)",
-            key=f"override_reason_{run_id}",
-        )
+    current_inputs = {
+        "case_id": case_id,
+        "prior_contacts": prior_contacts,
+        "unresolved": unresolved,
+        "work_impact": work_impact,
+        "history_text": history_text,
+        "case_text": case_text,
+    }
 
-        blocked = stale or bool(discrepancy) or not case_id.strip()
-        if blocked:
-            st.caption(
-                "Accept, Modify and Escalate are disabled until this is "
-                "resolved: rerun the assessment if inputs changed, or "
-                "correct the discrepancy above."
-            )
+    # Clear outputs immediately when any assessed input changes, not only on submit.
+    invalidate_changed_inputs(st.session_state, current_inputs)
 
-        dcol1, dcol2, dcol3, dcol4 = st.columns(4)
-        decision = None
-        validation_error = None
+    if submitted:
+        with st.spinner("Checking inputs and preparing the assessment..."):
+            assessment_error = run_assessment(st.session_state, current_inputs, api_key)
+        if assessment_error:
+            st.error(assessment_error)
+    elif st.session_state.get("assessment_invalidated", False):
+        st.warning("No current assessment. Previous results and simulated ticket were cleared. Run AI assessment again.")
 
-        # ACCEPT — only valid when the recommendation has not been changed
-        if dcol1.button("Accept", type="primary", disabled=blocked):
-            if queue.strip() != default_queue or action_note.strip() != default_action:
-                validation_error = (
-                    "Accept can only be used when the system recommendation is "
-                    "unchanged. Use Modify if you changed the queue or action/notes."
-                )
-            else:
-                decision = "Accept"
+    if st.session_state.result:
+        r = st.session_state.result
+        p = st.session_state.priority
 
-        # MODIFY — requires an actual change
-        if dcol2.button("Modify", disabled=blocked):
-            if queue.strip() == default_queue and action_note.strip() == default_action:
-                validation_error = (
-                    "Modify requires an actual change to the assigned queue or the "
-                    "approved action/notes. Edit one of these fields before selecting "
-                    "Modify, or choose Accept if the suggested routing is correct."
-                )
-            elif not override_reason.strip():
-                validation_error = "Enter an override reason before selecting Modify."
-            else:
-                decision = "Modify"
+        # Stale-assessment protection: compare the inputs currently shown on the
+        # page against the snapshot taken when this assessment last ran.
+        stale = current_inputs != st.session_state.assessed_inputs
+        if stale:
+            st.warning("Inputs changed after assessment. Run AI assessment again.")
 
-        # ESCALATE — always places the case on the escalation path. The action
-        # note is rebuilt from scratch rather than appended to the non-escalation
-        # default, so it never contains a contradictory "no escalation required"
-        # phrase alongside "escalated".
-        if dcol3.button("Escalate", disabled=blocked):
-            queue = "Specialist broadband escalation queue"
-            if not p["escalation_recommended"]:
-                custom_note = action_note.strip()
-                if custom_note == default_action:
-                    custom_note = ""
-                action_note = (
-                    "Route for escalation and further investigation. Officer "
-                    "override: the deterministic rules did not recommend escalation."
-                )
-                if custom_note:
-                    action_note += f" Officer note: {custom_note}"
-            changed = queue != default_queue or action_note.strip() != default_action
-            if changed and not override_reason.strip():
-                validation_error = "Enter an override reason before changing the escalation recommendation."
-            else:
-                decision = "Escalate"
+        discrepancy = st.session_state.discrepancy
+        if discrepancy and not stale:
+            st.error(f"Discrepancy detected — officer verification required. {discrepancy}")
 
-        # NO DECISION — business action must remain blocked
-        if dcol4.button("No decision (test block)"):
-            decision = "None"
-
-        if validation_error:
-            st.session_state.record = None
-            st.error(validation_error)
-
-        if decision:
-            record = create_simulated_record(
-                st.session_state.case_id, p["score"], queue.strip(), decision, action_note.strip(),
-                original_queue=default_queue, original_action=default_action,
-                override_reason=override_reason,
-            )
-            st.session_state.record = {
-                **record, "decision": decision, "queue": queue, "action": action_note,
-                "assessment_id": st.session_state.processing_details["assessment_id"],
-            }
-
-    if st.session_state.record:
-        rec = st.session_state.record
         with st.container(border=True):
-            st.subheader("5. Simulated business action")
-            if rec["status"].startswith("BLOCKED"):
-                st.warning(f"NO SIMULATED RECORD CREATED — {rec['status']}")
-            else:
-                st.success("SIMULATED TICKET — DEMONSTRATION ONLY")
-                st.json({
-                    "case_id": rec["case_id"],
-                    "assessment_id": rec["assessment_id"],
-                    "ticket_id": rec["ticket_id"],
-                    "priority_score": rec["priority_score"],
-                    "score_unit": rec["score_unit"],
-                    "max_rule_points": rec["max_rule_points"],
-                    "prototype_version": rec["prototype_version"],
-                    "assigned_queue": rec["assigned_queue"],
-                    "human_decision": rec["human_decision"],
-                    "approved_action": rec["approved_action"],
-                    "original_queue": rec["original_queue"],
-                    "original_action": rec["original_action"],
-                    "override_reason": rec["override_reason"],
-                    "timestamp_sgt": rec["timestamp"],
-                    "status": rec["status"],
-                })
+            st.markdown('<div class="step-label">02 / AI OUTPUT</div>', unsafe_allow_html=True)
+            st.subheader("Case assessment")
+            st.caption("Classification and summary returned by OpenAI. Inspect the API exchange in Processing & audit.")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Complexity", r["complexity"])
+            col2.metric("Urgency", r["urgency"])
+            col3.metric("Sentiment", r["sentiment"])
+            st.write(f"**Intent:** {r['intent']}")
+            with st.expander("Fault-detail keywords absent from the current message (reference only)"):
+                st.write(r["missing_info"])
+                st.caption(
+                    "This message-only keyword checklist does not inspect interaction "
+                    "history or structured fields. Absent keywords do not establish a "
+                    "case-level information gap. Review all case information before "
+                    "requesting details. Fault duration and troubleshooting may not "
+                    "apply to routine requests such as changing a Wi-Fi password. "
+                    "This checklist is not a safety or approval check."
+                )
+            st.write(f"**Case summary:** {r['summary']}")
+
+        with st.container(border=True):
+            st.markdown('<div class="step-label">03 / ROUTING RULES</div>', unsafe_allow_html=True)
+            st.subheader("Priority & recommended route")
+            score_col, route_col = st.columns([1, 2])
+            score_col.metric("Priority · rule points", p["score"])
+            route_col.metric("Recommended route", "Specialist" if p["escalation_recommended"] else "Standard")
+            st.caption(f"Current rules have a maximum of {MAX_RULE_POINTS} points. This is not a percentage.")
+            st.write(f"**Breakdown:** {p['breakdown']}")
+            st.write(f"**Escalation recommended:** {'Yes' if p['escalation_recommended'] else 'No'}")
+            st.write(f"**Escalation trigger:** {p['trigger']}")
             st.caption(
-                "This record is generated by this app's own code, not by the AI model, "
-                "and does not exist in any live Singtel system."
+                "Priority score: fixed Python rules use previous contacts, unresolved "
+                "status, work impact and AI-classified sentiment. Escalation: separate "
+                "Python rules recommend escalation when AI-classified urgency is High, "
+                "AI-classified complexity is High, or the priority score is greater "
+                "than 70. Urgency and complexity do not add points to the score."
             )
+
+        if p["escalation_recommended"]:
+            default_queue = "Specialist broadband escalation queue"
+            default_action = "Route for escalation and further investigation."
+        else:
+            default_queue = "Standard broadband support queue"
+            default_action = "Provide standard troubleshooting guidance; no escalation required based on current information."
+
+        with st.container(border=True):
+            st.markdown('<div class="step-label">04 / HUMAN APPROVAL</div>', unsafe_allow_html=True)
+            st.subheader("Review & decide")
+            st.write("A human service officer retains final authority.")
+            st.caption(
+                f"Suggested based on the rule result (Escalation recommended: "
+                f"{'Yes' if p['escalation_recommended'] else 'No'}). The officer can accept, "
+                f"change, or override this suggestion."
+            )
+            run_id = st.session_state.assessment_run
+            queue = st.text_input("Assigned queue", value=default_queue, key=f"queue_input_{run_id}")
+            action_note = st.text_area("Approved action / notes", value=default_action, key=f"action_input_{run_id}")
+
+            override_reason = st.text_area(
+                "Override reason (required for Modify or a changed escalation recommendation)",
+                key=f"override_reason_{run_id}",
+            )
+
+            blocked = stale or bool(discrepancy) or not case_id.strip()
+            if blocked:
+                st.caption(
+                    "Accept, Modify and Escalate are disabled until this is "
+                    "resolved: rerun the assessment if inputs changed, or "
+                    "correct the discrepancy above."
+                )
+
+            dcol1, dcol2, dcol3, dcol4 = st.columns(4)
+            decision = None
+            validation_error = None
+
+            # ACCEPT — only valid when the recommendation has not been changed
+            if dcol1.button("Accept", type="primary", disabled=blocked):
+                if queue.strip() != default_queue or action_note.strip() != default_action:
+                    validation_error = (
+                        "Accept can only be used when the system recommendation is "
+                        "unchanged. Use Modify if you changed the queue or action/notes."
+                    )
+                else:
+                    decision = "Accept"
+
+            # MODIFY — requires an actual change
+            if dcol2.button("Modify", disabled=blocked):
+                if queue.strip() == default_queue and action_note.strip() == default_action:
+                    validation_error = (
+                        "Modify requires an actual change to the assigned queue or the "
+                        "approved action/notes. Edit one of these fields before selecting "
+                        "Modify, or choose Accept if the suggested routing is correct."
+                    )
+                elif not override_reason.strip():
+                    validation_error = "Enter an override reason before selecting Modify."
+                else:
+                    decision = "Modify"
+
+            # ESCALATE — always places the case on the escalation path. The action
+            # note is rebuilt from scratch rather than appended to the non-escalation
+            # default, so it never contains a contradictory "no escalation required"
+            # phrase alongside "escalated".
+            if dcol3.button("Escalate", disabled=blocked):
+                queue = "Specialist broadband escalation queue"
+                if not p["escalation_recommended"]:
+                    custom_note = action_note.strip()
+                    if custom_note == default_action:
+                        custom_note = ""
+                    action_note = (
+                        "Route for escalation and further investigation. Officer "
+                        "override: the deterministic rules did not recommend escalation."
+                    )
+                    if custom_note:
+                        action_note += f" Officer note: {custom_note}"
+                changed = queue != default_queue or action_note.strip() != default_action
+                if changed and not override_reason.strip():
+                    validation_error = "Enter an override reason before changing the escalation recommendation."
+                else:
+                    decision = "Escalate"
+
+            # NO DECISION — business action must remain blocked
+            if dcol4.button("No decision (test block)"):
+                decision = "None"
+
+            if validation_error:
+                st.session_state.record = None
+                st.error(validation_error)
+
+            if decision:
+                record = create_simulated_record(
+                    st.session_state.case_id, p["score"], queue.strip(), decision, action_note.strip(),
+                    original_queue=default_queue, original_action=default_action,
+                    override_reason=override_reason,
+                )
+                st.session_state.record = {
+                    **record, "decision": decision, "queue": queue, "action": action_note,
+                    "assessment_id": st.session_state.processing_details["assessment_id"],
+                }
+
+        if st.session_state.record:
+            rec = st.session_state.record
+            with st.container(border=True):
+                st.markdown('<div class="step-label">05 / ACTION</div>', unsafe_allow_html=True)
+                st.subheader("Simulated case record")
+                if rec["status"].startswith("BLOCKED"):
+                    st.warning(f"NO SIMULATED RECORD CREATED — {rec['status']}")
+                else:
+                    st.success("SIMULATED TICKET — DEMONSTRATION ONLY")
+                    case_col, decision_col, points_col = st.columns(3)
+                    case_col.metric("Case reference", rec["case_id"])
+                    decision_col.metric("Officer decision", rec["human_decision"])
+                    points_col.metric("Rule points", rec["priority_score"])
+                    st.markdown(f"**Ticket:** `{rec['ticket_id']}`")
+                    st.caption(f"{rec['timestamp']} SGT · {rec['prototype_version']}")
+                    original_col, final_col = st.columns(2)
+                    with original_col:
+                        st.markdown("**Original recommendation**")
+                        st.write(rec["original_queue"])
+                        st.write(rec["original_action"])
+                    with final_col:
+                        st.markdown("**Approved action**")
+                        st.write(rec["assigned_queue"])
+                        st.write(rec["approved_action"])
+                    st.markdown("**Officer justification**")
+                    st.write(rec["override_reason"] or "Unchanged recommendation accepted; override reason not required.")
+                    st.caption(f"Assessment reference: {rec['assessment_id']}")
+                    with st.expander("Full simulated record"):
+                        st.json(rec)
+
+                st.caption(
+                    "This record is generated by this app's own code, not by the AI model, "
+                    "and does not exist in any live Singtel system."
+                )
+
+with audit_tab:
+    st.markdown('<div class="step-label">PROCESSING / AUDIT</div>', unsafe_allow_html=True)
+    st.subheader("Trace this assessment")
+    st.caption("Read-only evidence of backend processing in this Streamlit session. This is not a separately authenticated administration system or a persistent audit database.")
+    details = st.session_state.get("processing_details")
+    if not details:
+        st.markdown('<div class="empty-panel"><h3>No current processing record</h3><p>Run a valid case in Officer workspace to inspect its request, response and rules. Invalid inputs do not produce an AI processing record.</p></div>', unsafe_allow_html=True)
+    else:
+        model_col, time_col, case_col = st.columns(3)
+        model_col.metric("Requested model", details["requested_model"])
+        time_col.metric("API round-trip", f"{details['elapsed_seconds']:.2f} s")
+        case_col.metric("Case reference", details["case_id"])
+        st.caption(f"Assessment: {details['assessment_id']} · Version: {details['prototype_version']}")
+        with st.container(border=True):
+            st.subheader("1. Validation checkpoint")
+            st.success("Required case reference, meaningful narrative and detected contact-count consistency checks passed before this call.")
+            st.caption("Pattern checks have limited coverage; they do not establish complete factual consistency.")
+        request_tab, response_tab, rules_tab, audit_record_tab = st.tabs(["API request", "API response", "Python rules", "Decision audit"])
+        with request_tab:
+            st.subheader("Case context sent to OpenAI")
+            st.caption("The user message below is the exact case context recorded for this assessment.")
+            st.code(details["case_context"], language="text")
+            with st.expander("System instructions sent with the case"):
+                st.code(details["system_prompt"], language="text")
+        with response_tab:
+            st.subheader("Model response")
+            st.write("**Response ID:**", details["response_id"] or "Unavailable")
+            st.write("**Returned model:**", details["returned_model"] or "Unavailable")
+            st.caption(f"Started: {details['started_at_sgt']} · Completed: {details['completed_at_sgt']}")
+            st.json(details["model_output"])
+            with st.expander("Original response text"):
+                st.code(details["raw_response"] or "Unavailable", language="json")
+        with rules_tab:
+            st.subheader("Fixed scoring inputs")
+            snapshot = st.session_state.assessed_inputs
+            ai = st.session_state.result
+            st.table([
+                {"Factor":"Base", "Value":"Always", "Points":10},
+                {"Factor":"Previous contacts ≥ 2", "Value":str(snapshot["prior_contacts"]), "Points":20 if snapshot["prior_contacts"] >= 2 else 0},
+                {"Factor":"Unresolved", "Value":str(snapshot["unresolved"]), "Points":20 if snapshot["unresolved"] else 0},
+                {"Factor":"Work impact", "Value":str(snapshot["work_impact"]), "Points":25 if snapshot["work_impact"] else 0},
+                {"Factor":"Frustrated sentiment", "Value":ai["sentiment"], "Points":12 if ai["sentiment"] == "Frustrated" else 0},
+            ])
+            st.write(f"**Total:** {st.session_state.priority['score']} rule points · maximum {MAX_RULE_POINTS}")
+            st.write(f"**Independent escalation triggers:** {st.session_state.priority['trigger']}")
+            st.caption("High urgency and High complexity can trigger escalation without contributing points.")
+        with audit_record_tab:
+            st.subheader("Officer decision record")
+            record = st.session_state.record
+            if record and not record["status"].startswith("BLOCKED"):
+                st.json(record)
+                st.download_button("Download simulated audit record", data=json.dumps(record, indent=2), file_name=f"{record['ticket_id']}.json", mime="application/json")
+            elif record:
+                st.warning(record["status"])
+            else:
+                st.info("Awaiting an officer decision. No simulated ticket has been created for this assessment.")
+        st.caption("Synthetic prototype evidence only. API credentials are not included. Changing case inputs clears this view.")
