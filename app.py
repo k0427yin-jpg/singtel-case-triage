@@ -38,7 +38,7 @@ st.set_page_config(
 )
 
 SGT = timezone(timedelta(hours=8))
-APP_VERSION = "2026-09-26-state-provenance-v9"
+APP_VERSION = "2026-09-26-provenance-lock-v10"
 MODEL_NAME = "gpt-4o-mini"
 MAX_RULE_POINTS = 87
 
@@ -103,6 +103,9 @@ Summary rules:
 - Distinguish completed actions from planned actions; do not infer their outcome.
 - If a contact count is identified as customer-reported, state that provenance
   explicitly and do not imply that enterprise case history was retrieved.
+- For a customer-reported count, use attribution such as "The customer reports
+  contacting support three times." Do not rewrite it as the unqualified fact
+  "They have contacted support three times."
 - Keep these facts concise and grounded in the supplied history and message.
 
 Return ONLY the JSON object, no other text.
@@ -511,7 +514,6 @@ def contact_count_provenance(inputs):
         "customer_reported": source == CUSTOMER_REPORTED_CONTACT_SOURCE,
         "requires_acknowledgement": (
             source == CUSTOMER_REPORTED_CONTACT_SOURCE
-            and int(inputs.get("prior_contacts", 0)) > 0
             and not acknowledged
         ),
     }
@@ -961,7 +963,7 @@ def render_workspace_switcher():
             <span class="site-wordmark">Singtel</span>
             <span class="site-product">Case Intelligence</span>
           </div>
-          <div class="site-status"><span></span> Classroom prototype</div>
+          <div class="site-status"><span></span> Group 11 prototype</div>
         </div>
         <div class="demo-access-note"><b>Demo navigation</b> · Role views are shown together for assessment. Production authentication and role-based access are not implemented.</div>
         <div class="workspace-label">Choose a role view</div>
@@ -1395,7 +1397,7 @@ def render_customer_workspace():
                 st.caption(f"Submitted {request['submitted_at']} SGT")
                 st.caption(request["service"])
                 if status.get("ticket_id"):
-                    st.markdown(f"**Support record**  \n`{status['ticket_id']}`")
+                    st.markdown(f"**Simulated support record**  \n`{status['ticket_id']}`")
             with status_body:
                 st.markdown(f'<div class="customer-status"><span>{status["stage"]}</span><h3>{status["title"]}</h3><p>{status["message"]}</p></div>', unsafe_allow_html=True)
                 st.caption(status["progress_label"])
@@ -1404,7 +1406,7 @@ def render_customer_workspace():
                 st.write(status["next_step"])
         st.divider()
         st.caption(
-            "This classroom prototype stores simulated requests only for the current app session. "
+            "This Group 11 prototype stores simulated requests only for the current app session. "
             "It cannot access a Singtel account or create a real support case."
         )
 
@@ -1500,7 +1502,6 @@ def render_officer_workspace(api_key):
             st.caption(f"Contact-count source: {contact_count_source}.")
         acknowledgement_required = (
             contact_count_source == CUSTOMER_REPORTED_CONTACT_SOURCE
-            and int(prior_contacts) > 0
             and not contact_count_acknowledged
         )
         analyse_clicked = st.button(
