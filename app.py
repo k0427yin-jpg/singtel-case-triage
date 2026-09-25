@@ -33,7 +33,8 @@ from openai import OpenAI
 st.set_page_config(page_title="Singtel Case Triage (Prototype)", page_icon="\U0001F4E1")
 
 SGT = timezone(timedelta(hours=8))
-APP_VERSION = "2026-09-25-state-gates-v2"
+APP_VERSION = "2026-09-25-processing-evidence-v3"
+MODEL_NAME = "gpt-4o-mini"
 MAX_RULE_POINTS = 87
 
 SYSTEM_PROMPT = """You are an AI case-assessment assistant for a prototype called
@@ -108,7 +109,7 @@ Return ONLY the JSON object, no other text.
 def classify_case(case_text: str, api_key: str) -> dict:
     client = OpenAI(api_key=api_key)
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=MODEL_NAME,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": case_text},
@@ -116,7 +117,14 @@ def classify_case(case_text: str, api_key: str) -> dict:
         temperature=0,
         response_format={"type": "json_object"},
     )
-    return json.loads(response.choices[0].message.content)
+    raw_content = response.choices[0].message.content
+    result = json.loads(raw_content)
+    result["_api_evidence"] = {
+        "response_id": response.id,
+        "returned_model": response.model,
+        "raw_response": raw_content,
+    }
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +348,7 @@ def create_simulated_record(case_id: str, priority_score: int, assigned_queue: s
 
 def clear_assessment(state):
     """Discard all outputs tied to a previous assessment, including its ticket."""
-    for key in ("result", "priority", "record", "assessed_inputs", "discrepancy",
+    for key in ("result", "priority", "record", "assessed_inputs", "discrepancy", "processing_details",
                 "case_id", "prior_contacts", "unresolved", "work_impact"):
         state[key] = None
 
@@ -382,8 +390,13 @@ Previous interaction history:
 
 Customer message:
 {inputs['case_text']}"""
+    started_at = datetime.now(SGT)
     try:
         ai_result = classify_case(ai_case_input, api_key)
+        completed_at = datetime.now(SGT)
+        api_evidence = ai_result.pop("_api_evidence", {})
+        # Snapshot only the model output, before Python adds its keyword check.
+        model_output = dict(ai_result)
         # Validate required model fields before committing any UI state.
         for key in ("intent", "summary"):
             if not isinstance(ai_result.get(key), str) or not ai_result[key].strip():
@@ -402,6 +415,21 @@ Customer message:
         )
     except Exception:
         return "AI assessment failed. No current result or ticket is available. Please try again."
+    state["processing_details"] = {
+        "assessment_id": "ASSESS-" + started_at.strftime("%Y%m%d-%H%M%S-%f"),
+        "prototype_version": APP_VERSION,
+        "case_id": inputs["case_id"].strip(),
+        "requested_model": MODEL_NAME,
+        "returned_model": api_evidence.get("returned_model"),
+        "response_id": api_evidence.get("response_id"),
+        "started_at_sgt": started_at.isoformat(timespec="seconds"),
+        "completed_at_sgt": completed_at.isoformat(timespec="seconds"),
+        "elapsed_seconds": round((completed_at - started_at).total_seconds(), 3),
+        "case_context": ai_case_input,
+        "system_prompt": SYSTEM_PROMPT,
+        "model_output": model_output,
+        "raw_response": api_evidence.get("raw_response"),
+    }
     state["result"] = ai_result
     state["priority"] = priority
     state["case_id"] = inputs["case_id"].strip()
@@ -615,6 +643,27 @@ if st.session_state.result:
     if discrepancy and not stale:
         st.error(f"Discrepancy detected — officer verification required. {discrepancy}")
 
+    details = st.session_state.get("processing_details")
+    if details:
+        with st.expander("AI processing details — backend evidence", expanded=False):
+            st.caption(
+                "Recorded from this successful assessment. The backend sends the "
+                "case context to OpenAI; Python calculates the score separately. "
+                "API credentials are not included."
+            )
+            st.json({key: details[key] for key in (
+                "assessment_id", "prototype_version", "case_id", "requested_model",
+                "returned_model", "response_id", "started_at_sgt", "completed_at_sgt",
+                "elapsed_seconds",
+            )})
+            st.markdown("**Case context sent to the API (user message)**")
+            st.code(details["case_context"], language="text")
+            st.markdown("**Classification and summary returned by the API**")
+            st.json(details["model_output"])
+            if st.checkbox("Show system prompt and raw response", key=f"raw_evidence_{st.session_state.assessment_run}"):
+                st.code(details["system_prompt"], language="text")
+                st.code(details["raw_response"] or "Raw response unavailable.", language="json")
+
     with st.container(border=True):
         st.subheader("2. AI classification and summary (from OpenAI API)")
         col1, col2, col3 = st.columns(3)
@@ -744,7 +793,10 @@ if st.session_state.result:
                 original_queue=default_queue, original_action=default_action,
                 override_reason=override_reason,
             )
-            st.session_state.record = {**record, "decision": decision, "queue": queue, "action": action_note}
+            st.session_state.record = {
+                **record, "decision": decision, "queue": queue, "action": action_note,
+                "assessment_id": st.session_state.processing_details["assessment_id"],
+            }
 
     if st.session_state.record:
         rec = st.session_state.record
@@ -756,6 +808,7 @@ if st.session_state.result:
                 st.success("SIMULATED TICKET — DEMONSTRATION ONLY")
                 st.json({
                     "case_id": rec["case_id"],
+                    "assessment_id": rec["assessment_id"],
                     "ticket_id": rec["ticket_id"],
                     "priority_score": rec["priority_score"],
                     "score_unit": rec["score_unit"],
