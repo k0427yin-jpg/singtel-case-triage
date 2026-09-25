@@ -33,6 +33,8 @@ from openai import OpenAI
 st.set_page_config(page_title="Singtel Case Triage (Prototype)", page_icon="\U0001F4E1")
 
 SGT = timezone(timedelta(hours=8))
+APP_VERSION = "2026-09-25-state-gates-v2"
+MAX_RULE_POINTS = 87
 
 SYSTEM_PROMPT = """You are an AI case-assessment assistant for a prototype called
 "Singtel AI Complex Case Intelligence and Escalation System". You provide decision
@@ -322,6 +324,9 @@ def create_simulated_record(case_id: str, priority_score: int, assigned_queue: s
         "status": "Created for simulation",
         "case_id": case_id,
         "priority_score": priority_score,
+        "score_unit": "rule points",
+        "max_rule_points": MAX_RULE_POINTS,
+        "prototype_version": APP_VERSION,
         "assigned_queue": assigned_queue,
         "human_decision": officer_decision,
         "approved_action": approved_action,
@@ -331,6 +336,79 @@ def create_simulated_record(case_id: str, priority_score: int, assigned_queue: s
         "ticket_id": ticket_id,
         "timestamp": timestamp,
     }
+
+
+def clear_assessment(state):
+    """Discard all outputs tied to a previous assessment, including its ticket."""
+    for key in ("result", "priority", "record", "assessed_inputs", "discrepancy",
+                "case_id", "prior_contacts", "unresolved", "work_impact"):
+        state[key] = None
+
+
+def invalidate_changed_inputs(state, inputs):
+    snapshot = state.get("assessed_inputs")
+    if snapshot is not None and inputs != snapshot:
+        clear_assessment(state)
+        state["assessment_invalidated"] = True
+        return True
+    return False
+
+
+def run_assessment(state, inputs, api_key):
+    """Validate before model use; publish a complete result only on success."""
+    clear_assessment(state)
+    state["assessment_invalidated"] = True
+    if not inputs["case_id"].strip():
+        return "Enter a Case ID before running the assessment. Spaces alone are not valid."
+    if not has_meaningful_content(inputs["case_text"]) and not has_meaningful_content(inputs["history_text"]):
+        return ("Not enough information to assess this case. Enter a customer "
+                "message or previous interaction history with enough detail "
+                "before running the assessment.")
+    discrepancy = detect_contact_count_discrepancy(
+        inputs["prior_contacts"], inputs["case_text"], inputs["history_text"],
+    )
+    if discrepancy:
+        return (f"Discrepancy detected — officer verification required. {discrepancy} "
+                "Correct the inputs and run the assessment again. No AI call was made.")
+    if not api_key:
+        return "Enter your OpenAI API key in the sidebar first."
+    ai_case_input = f"""Service: Home Broadband
+Previous support contacts: {inputs['prior_contacts']}
+Issue still unresolved: {"Yes" if inputs['unresolved'] else "No"}
+Affects work / critical activity: {"Yes" if inputs['work_impact'] else "No"}
+
+Previous interaction history:
+{inputs['history_text'].strip() or "None recorded."}
+
+Customer message:
+{inputs['case_text']}"""
+    try:
+        ai_result = classify_case(ai_case_input, api_key)
+        # Validate required model fields before committing any UI state.
+        for key in ("intent", "summary"):
+            if not isinstance(ai_result.get(key), str) or not ai_result[key].strip():
+                raise ValueError(f"Invalid model field: {key}")
+        for key, allowed in {
+            "complexity": {"Low", "Medium", "High"},
+            "urgency": {"Low", "Medium", "High"},
+            "sentiment": {"Positive", "Neutral", "Frustrated"},
+        }.items():
+            if ai_result.get(key) not in allowed:
+                raise ValueError(f"Invalid model field: {key}")
+        ai_result["missing_info"] = check_missing_information(inputs["case_text"])
+        priority = calculate_priority(
+            inputs["prior_contacts"], inputs["unresolved"], inputs["work_impact"],
+            ai_result["sentiment"], ai_result["complexity"], ai_result["urgency"],
+        )
+    except Exception:
+        return "AI assessment failed. No current result or ticket is available. Please try again."
+    state["result"] = ai_result
+    state["priority"] = priority
+    state["case_id"] = inputs["case_id"].strip()
+    state["assessed_inputs"] = dict(inputs)
+    state["assessment_run"] = state.get("assessment_run", 0) + 1
+    state["assessment_invalidated"] = False
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +503,7 @@ shared_key = st.secrets.get("OPENAI_API_KEY", None)
 
 with st.sidebar:
     st.header("Settings")
+    st.caption(f"Prototype version: {APP_VERSION}")
     if shared_key:
         st.success("Using the evaluator API key provided by the developer.")
         override_key = st.text_input(
@@ -511,57 +590,16 @@ current_inputs = {
     "case_text": case_text,
 }
 
+# Clear outputs immediately when any assessed input changes, not only on submit.
+invalidate_changed_inputs(st.session_state, current_inputs)
+
 if submitted:
-    if not case_id.strip():
-        st.error("Enter a Case ID before running the assessment. Spaces alone are not valid.")
-    elif not api_key:
-        st.error("Enter your OpenAI API key in the sidebar first.")
-    elif not has_meaningful_content(case_text) and not has_meaningful_content(history_text):
-        st.error(
-            "Not enough information to assess this case. Enter a customer "
-            "message or previous interaction history with enough detail "
-            "before running the assessment."
-        )
-    else:
-        with st.spinner("Calling AI model for classification and summary..."):
-            try:
-                ai_case_input = f"""Service: Home Broadband
-Previous support contacts: {prior_contacts}
-Issue still unresolved: {"Yes" if unresolved else "No"}
-Affects work / critical activity: {"Yes" if work_impact else "No"}
-
-Previous interaction history:
-{history_text.strip() if history_text.strip() else "None recorded."}
-
-Customer message:
-{case_text}"""
-                ai_result = classify_case(ai_case_input, api_key)
-                # Deliberately message-only: the deterministic completeness
-                # check reads the current customer message, not the history
-                # field, so it reflects what the customer themselves has
-                # stated in this contact. Extending it to also scan history
-                # is a possible future refinement, not done here.
-                ai_result["missing_info"] = check_missing_information(case_text)
-                st.session_state.result = ai_result
-                st.session_state.case_id = case_id.strip()
-                st.session_state.prior_contacts = prior_contacts
-                st.session_state.unresolved = unresolved
-                st.session_state.work_impact = work_impact
-                priority = calculate_priority(
-                    prior_contacts, unresolved, work_impact,
-                    ai_result["sentiment"], ai_result["complexity"], ai_result["urgency"],
-                )
-                st.session_state.priority = priority
-                st.session_state.record = None
-                st.session_state.assessment_run += 1
-                # Snapshot the exact inputs this assessment was based on, and
-                # check for a contact-count contradiction, at assessment time.
-                st.session_state.assessed_inputs = dict(current_inputs)
-                st.session_state.discrepancy = detect_contact_count_discrepancy(
-                    prior_contacts, case_text, history_text,
-                )
-            except Exception as e:
-                st.error(f"AI call failed: {e}")
+    with st.spinner("Checking inputs and preparing the assessment..."):
+        assessment_error = run_assessment(st.session_state, current_inputs, api_key)
+    if assessment_error:
+        st.error(assessment_error)
+elif st.session_state.get("assessment_invalidated", False):
+    st.warning("No current assessment. Previous results and simulated ticket were cleared. Run AI assessment again.")
 
 if st.session_state.result:
     r = st.session_state.result
@@ -598,7 +636,8 @@ if st.session_state.result:
 
     with st.container(border=True):
         st.subheader("3. Deterministic rule result (plain Python, not the AI model)")
-        st.write(f"**Priority score:** {p['score']} / 100")
+        st.write(f"**Priority score:** {p['score']} rule points")
+        st.caption(f"Current rules have a maximum of {MAX_RULE_POINTS} points. This is not a percentage.")
         st.write(f"**Breakdown:** {p['breakdown']}")
         st.write(f"**Escalation recommended:** {'Yes' if p['escalation_recommended'] else 'No'}")
         st.write(f"**Escalation trigger:** {p['trigger']}")
@@ -696,6 +735,7 @@ if st.session_state.result:
             decision = "None"
 
         if validation_error:
+            st.session_state.record = None
             st.error(validation_error)
 
         if decision:
@@ -718,6 +758,9 @@ if st.session_state.result:
                     "case_id": rec["case_id"],
                     "ticket_id": rec["ticket_id"],
                     "priority_score": rec["priority_score"],
+                    "score_unit": rec["score_unit"],
+                    "max_rule_points": rec["max_rule_points"],
+                    "prototype_version": rec["prototype_version"],
                     "assigned_queue": rec["assigned_queue"],
                     "human_decision": rec["human_decision"],
                     "approved_action": rec["approved_action"],
