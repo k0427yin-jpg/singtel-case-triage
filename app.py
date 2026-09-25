@@ -38,7 +38,7 @@ st.set_page_config(
 )
 
 SGT = timezone(timedelta(hours=8))
-APP_VERSION = "2026-09-25-singtel-visual-v8"
+APP_VERSION = "2026-09-26-state-provenance-v9"
 MODEL_NAME = "gpt-4o-mini"
 MAX_RULE_POINTS = 87
 
@@ -101,6 +101,8 @@ Summary rules:
 - Include documented troubleshooting or prior actions and any pending next steps
   when present, such as a router restart or scheduled line test.
 - Distinguish completed actions from planned actions; do not infer their outcome.
+- If a contact count is identified as customer-reported, state that provenance
+  explicitly and do not imply that enterprise case history was retrieved.
 - Keep these facts concise and grounded in the supplied history and message.
 
 Return ONLY the JSON object, no other text.
@@ -414,10 +416,18 @@ def calculate_priority(prior_contacts: int, unresolved: bool, work_impact: bool,
 # only after an explicit human decision. Never invented by the model.
 # ---------------------------------------------------------------------------
 
+CUSTOMER_REPORTED_CONTACT_SOURCE = "Customer-reported in Customer view demo"
+SYNTHETIC_TEMPLATE_CONTACT_SOURCE = "Synthetic validation template"
+OFFICER_ENTERED_CONTACT_SOURCE = "Officer-entered structured field"
+
+
 def create_simulated_record(case_id: str, priority_score: int, assigned_queue: str,
                              officer_decision: str, approved_action: str,
                              original_queue: str = "", original_action: str = "",
-                             override_reason: str = "", assessment_id: str = "") -> dict:
+                             override_reason: str = "", assessment_id: str = "",
+                             contact_count_source: str = OFFICER_ENTERED_CONTACT_SOURCE,
+                             contact_count_verified: bool = True,
+                             contact_count_acknowledged: bool = True) -> dict:
     case_id = case_id.strip()
     if not case_id:
         return {
@@ -472,6 +482,9 @@ def create_simulated_record(case_id: str, priority_score: int, assigned_queue: s
         "original_queue": original_queue,
         "original_action": original_action,
         "override_reason": override_reason.strip(),
+        "contact_count_source": contact_count_source,
+        "contact_count_verified": bool(contact_count_verified),
+        "contact_count_acknowledged": bool(contact_count_acknowledged),
         "ticket_id": ticket_id,
         "timestamp": timestamp,
     }
@@ -483,6 +496,25 @@ def clear_assessment(state):
                 "processing_details", "decision_draft", "validation_event"):
         state[key] = None
     state["decision_state"] = "Awaiting analysis"
+
+
+def contact_count_provenance(inputs):
+    """Describe where the structured contact count came from and its verification state."""
+    source = inputs.get("contact_count_source") or OFFICER_ENTERED_CONTACT_SOURCE
+    default_verified = source != CUSTOMER_REPORTED_CONTACT_SOURCE
+    verified = bool(inputs.get("contact_count_verified", default_verified))
+    acknowledged = bool(inputs.get("contact_count_acknowledged", source != CUSTOMER_REPORTED_CONTACT_SOURCE))
+    return {
+        "source": source,
+        "verified": verified,
+        "acknowledged": acknowledged,
+        "customer_reported": source == CUSTOMER_REPORTED_CONTACT_SOURCE,
+        "requires_acknowledgement": (
+            source == CUSTOMER_REPORTED_CONTACT_SOURCE
+            and int(inputs.get("prior_contacts", 0)) > 0
+            and not acknowledged
+        ),
+    }
 
 
 def invalidate_changed_inputs(state, inputs):
@@ -520,6 +552,13 @@ def run_assessment(state, inputs, api_key):
             "message or previous interaction history with enough detail "
             "before analysing the case."
         )
+    provenance = contact_count_provenance(inputs)
+    if provenance["requires_acknowledgement"]:
+        return block_before_api(
+            "The previous-contact count was reported by the customer and is not verified "
+            "against enterprise case history. A service officer must acknowledge this "
+            "data limitation before analysis. No AI call was made."
+        )
     discrepancy = detect_contact_count_discrepancy(
         inputs["prior_contacts"], inputs["case_text"], inputs["history_text"],
     )
@@ -532,8 +571,16 @@ def run_assessment(state, inputs, api_key):
         return block_before_api(
             "Prototype processing is not configured. Add the developer API key in Processing & audit."
         )
+    if provenance["customer_reported"] and provenance["acknowledged"]:
+        verification_label = "Not verified against enterprise case history; source acknowledged by officer"
+    elif provenance["customer_reported"]:
+        verification_label = "Not verified against enterprise case history; customer-reported source"
+    else:
+        verification_label = "Supplied synthetic or officer-entered field"
     ai_case_input = f"""Service: Home Broadband
 Previous support contacts: {inputs['prior_contacts']}
+Contact-count source: {provenance['source']}
+Contact-count verification: {verification_label}
 Issue still unresolved: {"Yes" if inputs['unresolved'] else "No"}
 Affects work / critical activity: {"Yes" if inputs['work_impact'] else "No"}
 
@@ -578,6 +625,9 @@ Customer message:
         "completed_at_sgt": completed_at.isoformat(timespec="seconds"),
         "elapsed_seconds": round((completed_at - started_at).total_seconds(), 3),
         "case_context": ai_case_input,
+        "contact_count_source": provenance["source"],
+        "contact_count_verified": provenance["verified"],
+        "contact_count_acknowledged": provenance["acknowledged"],
         "system_prompt": SYSTEM_PROMPT,
         "model_output": model_output,
         "raw_response": api_evidence.get("raw_response"),
@@ -703,6 +753,74 @@ def validate_officer_decision(priority: dict, decision: str, proposed_queue: str
     }
 
 
+def latest_record_for_case(state, case_id):
+    """Return the latest valid simulated decision for one case."""
+    current = state.get("record")
+    if (current and current.get("case_id") == case_id
+            and current.get("status") == "Created for simulation"):
+        return current
+    for record in reversed(state.get("audit_log", [])):
+        if (record.get("case_id") == case_id
+                and record.get("status") == "Created for simulation"):
+            return record
+    return None
+
+
+def customer_status_from_record(record):
+    """Translate a final internal decision into conservative customer-safe copy."""
+    specialist = "specialist" in record.get("assigned_queue", "").lower()
+    decision = record.get("human_decision", "").lower()
+    action = record.get("approved_action", "").lower()
+    pending_confirmation = any(
+        term in action for term in ("confirm", "pending", "whether", "supervisor review")
+    )
+    if specialist and (decision == "modify" or pending_confirmation):
+        return {
+            "stage": "Next step pending confirmation",
+            "title": "The officer review is complete",
+            "message": (
+                "A service officer updated the proposed next step. Further specialist review is "
+                "pending confirmation in this demonstration; no engineer visit or live service "
+                "action has been arranged."
+            ),
+            "tone": "info",
+            "ticket_id": record.get("ticket_id"),
+            "progress": 100,
+            "progress_label": "Case intake and decision stage complete",
+            "next_step": (
+                "The relevant service team would still need to confirm and carry out the approved "
+                "next step in a real workflow."
+            ),
+        }
+    if specialist:
+        return {
+            "stage": "Further review pending",
+            "title": "The officer review is complete",
+            "message": (
+                "A service officer recorded a specialist route in this demonstration. The next team "
+                "still needs to confirm and carry out the review, and the service issue is not assumed resolved."
+            ),
+            "tone": "info",
+            "ticket_id": record.get("ticket_id"),
+            "progress": 100,
+            "progress_label": "Case intake and decision stage complete",
+            "next_step": "A specialist team would confirm the follow-up action in a real service workflow.",
+        }
+    return {
+        "stage": "Next step recorded",
+        "title": "The officer review is complete",
+        "message": (
+            "A service officer recorded a proposed support action in this demonstration. "
+            "The action has not been carried out, and the service issue is not assumed resolved."
+        ),
+        "tone": "info",
+        "ticket_id": record.get("ticket_id"),
+        "progress": 100,
+        "progress_label": "Case intake and decision stage complete",
+        "next_step": "The relevant service team would carry out the recorded action in a real workflow.",
+    }
+
+
 def customer_status_from_state(state):
     """Return customer-safe status copy without exposing internal AI or rule data."""
     request = state.get("customer_request")
@@ -712,6 +830,9 @@ def customer_status_from_state(state):
             "title": "Tell us what is happening",
             "message": "Submit a support request to receive a case reference.",
             "tone": "neutral",
+            "progress": 0,
+            "progress_label": "Request not submitted",
+            "next_step": "Submit the form to start this demonstration journey.",
         }
 
     record = state.get("record")
@@ -726,31 +847,13 @@ def customer_status_from_state(state):
             "title": "Your request is still being reviewed",
             "message": "No support action has been confirmed yet. Your case remains open.",
             "tone": "warning",
+            "progress": 65,
+            "progress_label": "Case intake complete · decision still pending",
+            "next_step": "A service officer must record a valid decision before a next step appears here.",
         }
 
     if same_record_case and record.get("status") == "Created for simulation":
-        specialist = "specialist" in record.get("assigned_queue", "").lower()
-        if specialist:
-            return {
-                "stage": "Specialist review arranged",
-                "title": "Your case has been referred for further review",
-                "message": (
-                    "A specialist support review has been arranged. This does not "
-                    "mean the service issue is resolved; an officer will follow up."
-                ),
-                "tone": "success",
-                "ticket_id": record.get("ticket_id"),
-            }
-        return {
-            "stage": "Support action confirmed",
-            "title": "Your support request has been reviewed",
-            "message": (
-                "A service officer has confirmed the next support action. "
-                "The team will follow up using the contact channel for this case."
-            ),
-            "tone": "success",
-            "ticket_id": record.get("ticket_id"),
-        }
+        return customer_status_from_record(record)
 
     if state.get("result") and same_assessed_case:
         return {
@@ -758,13 +861,23 @@ def customer_status_from_state(state):
             "title": "Your request is being reviewed",
             "message": "A service officer is reviewing the case before confirming the next action.",
             "tone": "info",
+            "progress": 55,
+            "progress_label": "Case intake complete · officer decision pending",
+            "next_step": "Wait for the officer decision stage to be completed in this demonstration.",
         }
+
+    historic_record = latest_record_for_case(state, request_case_id)
+    if historic_record:
+        return customer_status_from_record(historic_record)
 
     return {
         "stage": "Request received",
         "title": "We have received your support request",
         "message": "Your case is waiting for service review. No outcome has been confirmed yet.",
         "tone": "info",
+        "progress": 25,
+        "progress_label": "Request received · officer review pending",
+        "next_step": "A service officer will review the supplied information in this demonstration.",
     }
 
 
@@ -777,9 +890,9 @@ def customer_status_from_state(state):
 # operationally distinct while reading the same in-session state.
 
 WORKSPACES = [
-    "01 · Customer support",
+    "01 · Customer view demo",
     "02 · Service officer",
-    "03 · Review queue",
+    "03 · Case review",
     "04 · Processing & audit",
     "05 · Audit trail",
 ]
@@ -806,11 +919,20 @@ def initialise_ui_state():
         "customer_request": None,
         "audit_log": [],
         "api_key_cache": "",
-        "workspace_page": WORKSPACES[0],
+        "workspace_page": WORKSPACES[1],
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+    legacy_workspace_names = {
+        "01 · Customer support": "01 · Customer view demo",
+        "03 · Review queue": "03 · Case review",
+    }
+    st.session_state.workspace_page = legacy_workspace_names.get(
+        st.session_state.workspace_page, st.session_state.workspace_page,
+    )
+    if st.session_state.workspace_page not in WORKSPACES:
+        st.session_state.workspace_page = WORKSPACES[1]
 
 
 def render_page_header(number, eyebrow, title, subtitle, role):
@@ -841,11 +963,12 @@ def render_workspace_switcher():
           </div>
           <div class="site-status"><span></span> Classroom prototype</div>
         </div>
-        <div class="workspace-label">Choose a workspace</div>
+        <div class="demo-access-note"><b>Demo navigation</b> · Role views are shown together for assessment. Production authentication and role-based access are not implemented.</div>
+        <div class="workspace-label">Choose a role view</div>
         """,
         unsafe_allow_html=True,
     )
-    labels = ["Customer", "Service officer", "Review queue", "Processing", "Audit"]
+    labels = ["Customer demo", "Service officer", "Case review", "Processing", "Audit"]
     columns = st.columns(5)
     for column, label, target in zip(columns, labels, WORKSPACES):
         if column.button(
@@ -862,8 +985,16 @@ def render_workspace_switcher():
 def render_customer_journey_steps():
     """Show the customer-facing support journey without exposing internal logic."""
     request = st.session_state.get("customer_request")
-    record = st.session_state.get("record")
-    active_step = 3 if request and record and record.get("case_id") == request.get("case_id") else 2 if request else 1
+    request_case_id = request.get("case_id") if request else None
+    assessed_case_id = (st.session_state.get("assessed_inputs") or {}).get("case_id")
+    current_record = st.session_state.get("record")
+    current_pending = bool(
+        request and assessed_case_id == request_case_id
+        and not (current_record and current_record.get("case_id") == request_case_id)
+        and (st.session_state.get("result") or st.session_state.get("decision_state") == "Assessment blocked")
+    )
+    final_record = latest_record_for_case(st.session_state, request_case_id) if request else None
+    active_step = 2 if current_pending else 3 if final_record else 2 if request else 1
     labels = [
         ("1", "Describe the issue", "Tell us what happened"),
         ("2", "Service review", "An officer checks the case"),
@@ -967,6 +1098,14 @@ def render_priority_route():
         st.caption(f"The current fixed rules have a maximum of {MAX_RULE_POINTS} rule points. This is not a percentage.")
         st.markdown(f"**Score breakdown**  \n{priority['breakdown']}")
         st.markdown(f"**Independent escalation triggers**  \n{priority['trigger']}")
+        provenance = contact_count_provenance(st.session_state.assessed_inputs or {})
+        if provenance["customer_reported"]:
+            st.warning(
+                "The contact-count points use a customer-reported number. The officer acknowledged its source, "
+                "but this prototype did not retrieve or verify enterprise case history."
+            )
+        else:
+            st.caption(f"Contact-count source: {provenance['source']}.")
         route_left, route_right = st.columns(2)
         with route_left:
             st.markdown("**Recommended queue**")
@@ -1004,7 +1143,7 @@ def render_decision_panel(location):
             st.success(f"Decision recorded: {st.session_state.decision_state}")
             st.write(
                 "This assessment is locked after a valid decision so the customer status, "
-                "review queue and audit trail cannot diverge. Analyse a new or changed case "
+                "case review and audit trail cannot diverge. Analyse a new or changed case "
                 "to create another decision record."
             )
         return
@@ -1077,6 +1216,9 @@ def render_decision_panel(location):
                 original_action=prepared["original_action"],
                 override_reason=prepared["override_reason"],
                 assessment_id=details["assessment_id"],
+                contact_count_source=contact_count_provenance(st.session_state.assessed_inputs)["source"],
+                contact_count_verified=contact_count_provenance(st.session_state.assessed_inputs)["verified"],
+                contact_count_acknowledged=contact_count_provenance(st.session_state.assessed_inputs)["acknowledged"],
             )
             if new_record["status"].startswith("BLOCKED"):
                 st.session_state.record = None
@@ -1108,6 +1250,14 @@ def render_record_card():
         case_col.metric("Case ID", record["case_id"])
         assessment_col.markdown(f"**Assessment ID**  \n`{record['assessment_id']}`")
         ticket_col.markdown(f"**Ticket ID**  \n`{record['ticket_id']}`")
+        source = record.get("contact_count_source", OFFICER_ENTERED_CONTACT_SOURCE)
+        if source == CUSTOMER_REPORTED_CONTACT_SOURCE:
+            st.warning(
+                "Contact count in this record was customer-reported and acknowledged by the officer, "
+                "but was not verified against enterprise case history."
+            )
+        else:
+            st.caption(f"Contact-count source: {source}.")
         decision_col, points_col, time_col = st.columns(3)
         decision_col.metric("Officer decision", record["human_decision"])
         points_col.metric("Rule points", record["priority_score"])
@@ -1133,9 +1283,9 @@ def render_record_card():
 
 def render_customer_workspace():
     render_page_header(
-        "01", "CUSTOMER WORKSPACE", "Home broadband support",
+        "01", "CUSTOMER VIEW DEMO", "Home broadband support",
         "Report a service issue and follow the status of the support request.",
-        "CUSTOMER VIEW",
+        "CUSTOMER VIEW DEMO",
     )
     st.markdown(
         '<div class="customer-notice"><b>Demonstration only</b><span>No account access, service change or live support request.</span></div>',
@@ -1144,7 +1294,7 @@ def render_customer_workspace():
     render_customer_journey_steps()
 
     with st.container(border=True):
-        st.caption("CUSTOMER SUPPORT · HOME BROADBAND")
+        st.caption("CUSTOMER VIEW DEMO · HOME BROADBAND")
         st.subheader("Tell us what is happening")
         st.write("Complete the short form below. You will receive a case reference for this simulated request.")
         with st.form("customer_support_form", clear_on_submit=False):
@@ -1172,9 +1322,10 @@ def render_customer_workspace():
                 )
             with second_row[2]:
                 previous_contacts = st.number_input(
-                    "How many times have you contacted support about this issue?",
+                    "How many times do you recall contacting support about this issue?",
                     min_value=0,
                     value=0,
+                    help="This is your own estimate. A service officer must verify it against any available case history before analysis.",
                 )
             work_impact = st.checkbox("This is affecting work or another critical activity")
             customer_message = st.text_area(
@@ -1207,6 +1358,9 @@ def render_customer_workspace():
                     "work_impact": bool(work_impact),
                     "history_text": "",
                     "case_text": structured_message,
+                    "contact_count_source": CUSTOMER_REPORTED_CONTACT_SOURCE,
+                    "contact_count_verified": False,
+                    "contact_count_acknowledged": False,
                 }
                 st.session_state.case_revision += 1
                 st.session_state.loaded_scenario = "Customer-submitted request"
@@ -1218,6 +1372,8 @@ def render_customer_workspace():
                     "service": "Home Broadband",
                     "issue_type": issue_type,
                     "message": customer_message.strip(),
+                    "reported_contacts": int(previous_contacts),
+                    "contact_count_source": CUSTOMER_REPORTED_CONTACT_SOURCE,
                 }
                 st.success(f"Request received. Your case reference is {case_reference}.")
 
@@ -1242,16 +1398,10 @@ def render_customer_workspace():
                     st.markdown(f"**Support record**  \n`{status['ticket_id']}`")
             with status_body:
                 st.markdown(f'<div class="customer-status"><span>{status["stage"]}</span><h3>{status["title"]}</h3><p>{status["message"]}</p></div>', unsafe_allow_html=True)
-                stage_order = {
-                    "Request received": 25,
-                    "Officer review": 55,
-                    "Under review": 65,
-                    "Specialist review arranged": 100,
-                    "Support action confirmed": 100,
-                }
-                st.progress(stage_order.get(status["stage"], 10) / 100)
+                st.caption(status["progress_label"])
+                st.progress(status["progress"] / 100)
                 st.markdown("**What happens next**")
-                st.write("Keep the case reference. A confirmed action appears here after a service officer reviews the request.")
+                st.write(status["next_step"])
         st.divider()
         st.caption(
             "This classroom prototype stores simulated requests only for the current app session. "
@@ -1293,6 +1443,14 @@ def render_officer_workspace(api_key):
 
     draft = st.session_state.case_draft
     revision = st.session_state.case_revision
+    contact_count_source = draft.get("contact_count_source") or (
+        CUSTOMER_REPORTED_CONTACT_SOURCE
+        if st.session_state.loaded_scenario == "Customer-submitted request"
+        else SYNTHETIC_TEMPLATE_CONTACT_SOURCE
+    )
+    default_contact_acknowledgement = bool(
+        draft.get("contact_count_acknowledged", contact_count_source != CUSTOMER_REPORTED_CONTACT_SOURCE)
+    )
     with st.container(border=True):
         st.markdown('<div class="step-label">01 / CASE INPUT</div>', unsafe_allow_html=True)
         current_trace = st.session_state.get("processing_details")
@@ -1325,7 +1483,37 @@ def render_officer_workspace(api_key):
         case_text = st.text_area(
             "Current customer message", value=draft["case_text"], height=160, key=f"staff_message_{revision}"
         )
-        analyse_clicked = st.button("Analyse case", type="primary", key=f"analyse_{revision}")
+        if contact_count_source == CUSTOMER_REPORTED_CONTACT_SOURCE:
+            st.warning(
+                "Contact-count source: customer-reported in the demo form. It has not been retrieved or verified "
+                "against Singtel case history. If used, the rules will treat it as an unverified structured input."
+            )
+            contact_count_acknowledged = st.checkbox(
+                "I acknowledge that this contact count is customer-reported and unverified",
+                value=default_contact_acknowledgement,
+                key=f"staff_contacts_acknowledged_{revision}",
+            )
+            contact_count_verified = False
+        else:
+            contact_count_verified = True
+            contact_count_acknowledged = True
+            st.caption(f"Contact-count source: {contact_count_source}.")
+        acknowledgement_required = (
+            contact_count_source == CUSTOMER_REPORTED_CONTACT_SOURCE
+            and int(prior_contacts) > 0
+            and not contact_count_acknowledged
+        )
+        analyse_clicked = st.button(
+            "Analyse case",
+            type="primary",
+            key=f"analyse_{revision}",
+            disabled=acknowledgement_required,
+            help=(
+                "Acknowledge the customer-reported, unverified source before analysis."
+                if acknowledgement_required else
+                "Validate the inputs, call the configured model and apply the fixed Python rules."
+            ),
+        )
 
     current_inputs = {
         "case_id": case_id,
@@ -1334,6 +1522,9 @@ def render_officer_workspace(api_key):
         "work_impact": bool(work_impact),
         "history_text": history_text,
         "case_text": case_text,
+        "contact_count_source": contact_count_source,
+        "contact_count_verified": bool(contact_count_verified),
+        "contact_count_acknowledged": bool(contact_count_acknowledged),
     }
     st.session_state.case_draft = dict(current_inputs)
     inputs_changed = invalidate_changed_inputs(st.session_state, current_inputs)
@@ -1372,14 +1563,16 @@ def render_officer_workspace(api_key):
         show_status_message(status)
 
 
-def render_review_queue():
+def render_case_review():
     render_page_header(
-        "03", "HUMAN OVERSIGHT", "Review queue",
+        "03", "HUMAN OVERSIGHT", "Case review",
         "Inspect the full case dossier before confirming or overriding the recommendation.",
         "STAFF REVIEW",
     )
     render_staff_flow("decision")
-    st.info("In-session simulated review queue — records are not stored after the application session ends.")
+    st.info(
+        "Current in-session case dossier only. This prototype does not implement a selectable, sortable or persistent queue."
+    )
     if not st.session_state.result:
         if st.session_state.get("assessment_error"):
             st.error(f"Assessment blocked — {st.session_state.assessment_error}")
@@ -1402,8 +1595,8 @@ def render_review_queue():
                     "No model output, score or simulated record was created."
                 )
         render_empty_state(
-            "No assessed case in the queue",
-            "Analyse a valid case in Service officer workspace. Invalid or changed inputs do not remain in this queue.",
+            "No assessed case available for review",
+            "Analyse a valid case in Service officer workspace. Invalid or changed inputs do not remain in this case view.",
         )
         return
 
@@ -1414,12 +1607,13 @@ def render_review_queue():
     details = st.session_state.processing_details
     queue, action = recommended_route(priority)
     notes = extract_operational_notes(inputs["history_text"])
+    provenance = contact_count_provenance(inputs)
 
     with st.container(border=True):
         st.caption("CASE DOSSIER")
         id_col, contacts_col, status_col, impact_col = st.columns(4)
         id_col.metric("Case ID", inputs["case_id"])
-        contacts_col.metric("Previous contacts", inputs["prior_contacts"])
+        contacts_col.metric("Reported contacts", inputs["prior_contacts"])
         status_col.metric("Unresolved", "Yes" if inputs["unresolved"] else "No")
         impact_col.metric("Work impact", "Yes" if inputs["work_impact"] else "No")
         message_col, history_col = st.columns(2)
@@ -1437,6 +1631,13 @@ def render_review_queue():
             st.markdown("**Pending action or scheduled follow-up**")
             st.write(notes["pending_action"])
         st.caption("Operational note fields are transparent reference extractions from the supplied history and do not affect scoring.")
+        if provenance["customer_reported"]:
+            st.warning(
+                "Contact-count provenance: customer-reported in the demo form; acknowledged by the officer, "
+                "but not retrieved or verified against enterprise case history."
+            )
+        else:
+            st.caption(f"Contact-count provenance: {provenance['source']}.")
 
     with st.container(border=True):
         st.caption("CASE INTELLIGENCE AND ROUTING")
@@ -1540,6 +1741,11 @@ def render_processing_workspace(api_key, shared_key):
             meta_left.markdown(f"**Case ID**  \n`{details['case_id']}`")
             meta_right.markdown(f"**Prototype version**  \n`{details['prototype_version']}`")
             meta_right.markdown("**Validation result**  \nPassed before API call")
+            if details.get("contact_count_source") == CUSTOMER_REPORTED_CONTACT_SOURCE:
+                st.warning(
+                    "The contact count originated from the customer's demo submission. The officer acknowledged "
+                    "the source; the prototype did not retrieve or verify enterprise case history."
+                )
         with st.container(border=True):
             st.subheader("Exact case context sent to the API")
             st.code(details["case_context"], language="text")
@@ -1568,11 +1774,20 @@ def render_processing_workspace(api_key, shared_key):
         result = st.session_state.result
         priority = st.session_state.priority
         queue, action = recommended_route(priority)
+        provenance = contact_count_provenance(inputs)
         with st.container(border=True):
             st.subheader("Fixed Python score")
             st.table([
                 {"Factor": "Base", "Observed value": "Always", "Rule points": 10},
-                {"Factor": "Previous contacts ≥ 2", "Observed value": inputs["prior_contacts"], "Rule points": 20 if inputs["prior_contacts"] >= 2 else 0},
+                {
+                    "Factor": "Previous contacts ≥ 2",
+                    "Observed value": (
+                        f"{inputs['prior_contacts']} · customer-reported, unverified; source acknowledged"
+                        if provenance["customer_reported"] else
+                        f"{inputs['prior_contacts']} · {provenance['source']}"
+                    ),
+                    "Rule points": 20 if inputs["prior_contacts"] >= 2 else 0,
+                },
                 {"Factor": "Issue unresolved", "Observed value": "Yes" if inputs["unresolved"] else "No", "Rule points": 20 if inputs["unresolved"] else 0},
                 {"Factor": "Work / critical activity impact", "Observed value": "Yes" if inputs["work_impact"] else "No", "Rule points": 25 if inputs["work_impact"] else 0},
                 {"Factor": "Frustrated sentiment", "Observed value": result["sentiment"], "Rule points": 12 if result["sentiment"] == "Frustrated" else 0},
@@ -1580,6 +1795,10 @@ def render_processing_workspace(api_key, shared_key):
             points_col, max_col = st.columns(2)
             points_col.metric("Total rule points", priority["score"])
             max_col.metric("Maximum rule points", MAX_RULE_POINTS)
+            st.caption(
+                "These deterministic Python rules use structured fields and AI-classified sentiment. "
+                "An incorrect AI sentiment classification can therefore affect the 12-point sentiment component."
+            )
         with st.container(border=True):
             st.subheader("Independent routing result")
             st.markdown(f"**Escalation recommended**  \n{'Yes' if priority['escalation_recommended'] else 'No'}")
@@ -1642,6 +1861,10 @@ def render_audit_trail():
             st.write(latest["assigned_queue"])
             st.write(latest["approved_action"])
         st.markdown(f"**Override reason**  \n{latest['override_reason'] or 'Not required.'}")
+        source = latest.get("contact_count_source", OFFICER_ENTERED_CONTACT_SOURCE)
+        st.markdown(f"**Contact-count source**  \n{source}")
+        if source == CUSTOMER_REPORTED_CONTACT_SOURCE:
+            st.caption("Officer acknowledged the source; enterprise case-history verification was not performed.")
         st.download_button(
             "Download latest simulated audit record",
             data=json.dumps(latest, indent=2),
@@ -1672,7 +1895,7 @@ st.markdown(
     p, label { line-height:1.55; }
     .site-masthead {
         display:flex; align-items:center; justify-content:space-between; gap:20px;
-        padding:14px 2px 16px; border-bottom:1px solid var(--sg-border); margin-bottom:14px;
+        padding:9px 2px 11px; border-bottom:1px solid var(--sg-border); margin-bottom:9px;
     }
     .site-brand { display:flex; align-items:baseline; gap:14px; }
     .site-wordmark { color:var(--sg-red); font-size:28px; font-weight:850; letter-spacing:-.055em; }
@@ -1682,22 +1905,24 @@ st.markdown(
         text-transform:uppercase; letter-spacing:.09em; font-weight:750;
     }
     .site-status span { width:8px; height:8px; border-radius:999px; background:var(--sg-red); }
-    .workspace-label { color:#777A82; font-size:11px; font-weight:800; letter-spacing:.14em; text-transform:uppercase; margin-bottom:7px; }
-    .nav-rule { height:1px; background:var(--sg-border); margin:12px 0 28px; }
+    .demo-access-note { color:#555860; background:#FFF; border-left:3px solid var(--sg-red); padding:7px 10px; margin:0 0 10px; font-size:12px; }
+    .demo-access-note b { color:#A9003B; }
+    .workspace-label { color:#5F626A; font-size:12px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; margin-bottom:6px; }
+    .nav-rule { height:1px; background:var(--sg-border); margin:8px 0 14px; }
     .page-hero {
         position:relative; overflow:hidden; background:linear-gradient(112deg,#FFFFFF 0%,#FFFFFF 64%,#FFF1F5 100%);
-        border:1px solid var(--sg-border); border-radius:16px; margin-bottom:28px;
+        border:1px solid var(--sg-border); border-radius:14px; margin-bottom:16px;
         box-shadow:0 6px 22px rgba(36,36,41,.045);
     }
-    .hero-accent { height:6px; background:linear-gradient(90deg,var(--sg-red) 0%,var(--sg-magenta) 58%,#FF709A 100%); }
-    .hero-content { padding:28px 32px 30px; }
-    .hero-topline { display:flex; justify-content:space-between; align-items:center; color:var(--sg-red); font-size:11px; font-weight:850; letter-spacing:.15em; }
+    .hero-accent { height:4px; background:linear-gradient(90deg,var(--sg-red) 0%,var(--sg-magenta) 58%,#FF709A 100%); }
+    .hero-content { padding:16px 24px 18px; }
+    .hero-topline { display:flex; justify-content:space-between; align-items:center; color:var(--sg-red); font-size:12px; font-weight:850; letter-spacing:.13em; }
     .role-badge { border:1px solid #F0B8C8; background:var(--sg-blush); border-radius:999px; padding:6px 11px; color:#A9003B; }
-    .page-hero h1 { margin:14px 0 8px; font-size:40px; line-height:1.08; }
+    .page-hero h1 { margin:7px 0 5px; font-size:32px; line-height:1.08; }
     .page-hero p { color:var(--sg-muted); font-size:16px; margin:0; max-width:800px; }
     .red-dot { color:var(--sg-red); }
-    .hero-tags { display:flex; flex-wrap:wrap; gap:8px; margin-top:20px; }
-    .hero-tags span { border:1px solid var(--sg-border); background:#FFF; border-radius:999px; color:#5E6068; padding:5px 11px; font-size:11px; }
+    .hero-tags { display:flex; flex-wrap:wrap; gap:7px; margin-top:10px; }
+    .hero-tags span { border:1px solid var(--sg-border); background:#FFF; border-radius:999px; color:#4F525A; padding:4px 10px; font-size:12px; }
     .customer-notice {
         display:flex; align-items:center; gap:14px; background:var(--sg-blush); border:1px solid #F3C5D2;
         border-radius:12px; color:#5D3945; padding:14px 18px; margin-bottom:18px;
@@ -1712,7 +1937,7 @@ st.markdown(
     .journey-step.is-active { border-color:#E98AA5; background:var(--sg-blush); }
     .journey-step.is-active > span, .journey-step.is-complete > span { background:var(--sg-red); color:#FFF; }
     .journey-step.is-complete { border-color:#F2C4D1; }
-    .staff-flow { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:3px 0 22px; }
+    .staff-flow { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:2px 0 14px; }
     .staff-flow-step { color:#777A82; background:#FFF; border:1px solid var(--sg-border); border-radius:999px; padding:7px 12px; font-size:11px; font-weight:700; }
     .staff-flow-step.is-active { color:#FFF; background:var(--sg-red); border-color:var(--sg-red); }
     .staff-flow-step.is-complete { color:#A50038; background:var(--sg-blush); border-color:#F2C4D1; }
@@ -1743,8 +1968,8 @@ st.markdown(
         .site-masthead, .site-brand { align-items:flex-start; }
         .site-masthead { flex-direction:column; gap:8px; }
         .site-brand { flex-direction:column; gap:1px; }
-        .hero-content { padding:23px 20px 25px; }
-        .page-hero h1 { font-size:31px; }
+        .hero-content { padding:15px 18px 17px; }
+        .page-hero h1 { font-size:29px; }
         .hero-topline { align-items:flex-start; gap:12px; }
         .journey-steps { grid-template-columns:1fr; }
         .customer-notice { align-items:flex-start; flex-direction:column; gap:3px; }
@@ -1768,12 +1993,12 @@ api_key = shared_key or st.session_state.get("api_key_cache", "")
 workspace = st.session_state.workspace_page
 render_workspace_switcher()
 
-if workspace == "01 · Customer support":
+if workspace == "01 · Customer view demo":
     render_customer_workspace()
 elif workspace == "02 · Service officer":
     render_officer_workspace(api_key)
-elif workspace == "03 · Review queue":
-    render_review_queue()
+elif workspace == "03 · Case review":
+    render_case_review()
 elif workspace == "04 · Processing & audit":
     render_processing_workspace(api_key, shared_key)
 else:
